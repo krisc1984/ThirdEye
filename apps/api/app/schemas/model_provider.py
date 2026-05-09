@@ -37,5 +37,5 @@ class ModelProviderTestResult(BaseModel):
     provider_id: str
     ok: bool
     message: str
+    response_text: str | None = None
     capabilities: dict[str, bool] = Field(default_factory=dict)
-

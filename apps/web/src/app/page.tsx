@@ -1,25 +1,13 @@
-const links = [
-  { href: "/projects", label: "Projects" },
-  { href: "/playbooks", label: "Playbooks" },
-  { href: "/review", label: "Review" },
-  { href: "/settings/models", label: "Model Settings" }
-];
+import { AgentWorkspace } from "@/components/AgentWorkspace";
+import { listModelProviders, listPlaybooks, listProjects, listSkills } from "@/lib/api";
 
-export default function HomePage() {
-  return (
-    <main>
-      <h1>AI Tech Review</h1>
-      <p>Distill local project code and docs into review playbooks.</p>
-      <nav>
-        <ul>
-          {links.map((link) => (
-            <li key={link.href}>
-              <a href={link.href}>{link.label}</a>
-            </li>
-          ))}
-        </ul>
-      </nav>
-    </main>
-  );
+export default async function HomePage() {
+  const [playbooks, modelProviders, projects, skills] = await Promise.all([
+    listPlaybooks(),
+    listModelProviders(),
+    listProjects(),
+    listSkills()
+  ]);
+
+  return <AgentWorkspace playbooks={playbooks} modelProviders={modelProviders} projects={projects} skills={skills} />;
 }
-

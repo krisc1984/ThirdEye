@@ -45,6 +45,12 @@ class JsonStorage:
                 records.append(data)
         return records
 
+    def delete_json(self, namespace: str, record_id: str) -> None:
+        path = self._record_path(namespace, record_id)
+        if not path.exists():
+            raise FileNotFoundError(path)
+        path.unlink()
+
     def save_playbook_artifact(
         self,
         playbook_id: str,
@@ -61,6 +67,16 @@ class JsonStorage:
         playbook_dir = self._playbook_dir(playbook_id)
         artifact_path = self._safe_child(playbook_dir, artifact_name)
         return artifact_path.read_text(encoding="utf-8")
+
+    def list_playbook_artifacts(self, playbook_id: str) -> list[str]:
+        playbook_dir = self._playbook_dir(playbook_id)
+        if not playbook_dir.exists():
+            return []
+        return sorted(
+            str(path.relative_to(playbook_dir)).replace("\\", "/")
+            for path in playbook_dir.rglob("*")
+            if path.is_file()
+        )
 
     def _record_path(self, namespace: str, record_id: str) -> Path:
         directory = self._namespace_path(namespace)
@@ -87,4 +103,3 @@ class JsonStorage:
     def _validate_id(self, value: str, label: str) -> None:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value):
             raise StorageError(f"invalid {label}: {value!r}")
-

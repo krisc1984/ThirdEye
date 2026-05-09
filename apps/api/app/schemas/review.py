@@ -33,6 +33,9 @@ class ReviewResponse(BaseModel):
     playbook_id: str
     mode: ReviewMode
     input: str
+    execution_mode: Literal["deterministic", "llm"] = "deterministic"
+    resolved_provider_id: str | None = None
+    execution_note: str | None = None
     overall_judgement: OverallJudgement
     key_risks: list[str] = Field(default_factory=list)
     playbook_conflicts: list[str] = Field(default_factory=list)
@@ -43,3 +46,39 @@ class ReviewResponse(BaseModel):
     model_provider: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+
+class ReviewChatMessage(BaseModel):
+    id: str
+    role: Literal["system", "user", "assistant"]
+    content: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ReviewSessionCreateRequest(BaseModel):
+    playbook_id: str
+    project_id: str | None = None
+    model_provider_id: str | None = None
+    mode: ReviewMode = "standard"
+    opening_message: str | None = None
+
+
+class ReviewSessionSendRequest(BaseModel):
+    message: str
+
+
+class ReviewConversationSession(BaseModel):
+    id: str
+    playbook_id: str
+    project_id: str | None = None
+    mode: ReviewMode
+    status: Literal["idle", "running"] = "idle"
+    resume_available: bool = False
+    resume_reason: Literal["interruption", "error", "cancelled"] | None = None
+    execution_mode: Literal["deterministic", "llm"] = "deterministic"
+    resolved_provider_id: str | None = None
+    execution_note: str | None = None
+    latest_summary: str | None = None
+    last_review: ReviewResponse | None = None
+    messages: list[ReviewChatMessage] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)

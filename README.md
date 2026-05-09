@@ -1,133 +1,214 @@
 # ThirdEye - AI 技术评审系统
 
-基于 `oss-skill` 方法，将本地项目的工程判断蒸馏为可复用的 playbook skill，用于技术方案评审。
+基于 `oss-skill` 方法，将本地项目中的工程判断蒸馏为可复用的项目级 review playbook，用于技术方案评审。
 
-## 背景
+当前后端已经接入本仓库内的本地 `src/agents` 代码，并使用 OpenAI Agents SDK 风格的 `Agent + Runner + SQLiteSession` 承载模型测试、Playbook 蒸馏、单轮评审和多轮会话。
 
-团队在设计新功能、重构模块、引入依赖、调整架构边界时，通常缺少一套可复用的工程判断协议。代码库中的 README、设计文档、目录结构、测试、配置和历史实现已经隐含了大量维护共识，但这些共识没有被结构化沉淀。
+## MVP 能力
 
-ThirdEye 从代码、文档和工程痕迹中提炼可运行的工程判断，帮助你在动手前检查技术方案是否符合项目工程标准。
-
-## 功能特性
-
-- **项目蒸馏**: 选择本地项目文件夹，自动分析代码库和文档，生成项目评审 playbook
-- **Playbook 管理**: 查看、编辑、启用/禁用和重新生成 playbook
-- **技术方案评审**: 在对话界面输入技术方案，获取基于项目工程判断的结构化评审意见
-- **多模型支持**: 支持 OpenAI API 和其他 OpenAI-compatible 协议大模型
+- 本地项目扫描：读取代码、文档、测试、配置并生成项目概览
+- Playbook 蒸馏：产出 `playbook.skill.md`、规则、证据和 metadata
+- Playbook 管理：浏览列表、查看详情、查看证据
+- 技术方案评审：基于选定 playbook 返回结构化评审结果
+- 模型提供方配置：支持 OpenAI 与 OpenAI-compatible provider 的基础配置与连接测试
+- 多轮评审会话：基于本地 Agents SDK session 记忆持续追问
+- 本地审计日志：记录蒸馏与评审事件，并对密钥与敏感文本做脱敏
 
 ## 技术栈
 
-- **后端**: Python 3.12+, FastAPI, OpenAI Agents SDK
-- **前端**: Next.js 15, React 19, TypeScript
-- **数据存储**: PostgreSQL + pgvector (规划中), 当前使用文件系统
+- 后端：Python 3.12+, FastAPI, Pydantic, OpenAI Agents SDK 0.17.0
+- 前端：Next.js 15, React 19, TypeScript
+- 存储：本地文件系统 JSON/Markdown artifacts
+
+## 前置条件
+
+- Python 3.12+
+- Node.js 18+
+- `npm`
+- 推荐使用 `uv` 管理 Python 依赖
 
 ## 快速开始
 
-### 后端
+### 1. 启动后端
 
 ```bash
 cd apps/api
-
-# 安装依赖
 uv sync
-
-# 开发服务器
 uv run uvicorn app.main:app --reload
-
-# 运行测试
-uv run pytest
 ```
 
-### 前端
+也可以直接使用仓库根目录脚本同时拉起前后端：
+
+```powershell
+./start-dev.ps1
+```
+
+默认地址：
+
+```text
+http://127.0.0.1:8000
+```
+
+### 2. 启动前端
 
 ```bash
 cd apps/web
-
-# 安装依赖
 npm install
-
-# 开发服务器
 npm run dev
+```
 
-# 构建
+默认地址：
+
+```text
+http://127.0.0.1:3000
+```
+
+如需显式配置 API 地址：
+
+```bash
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
+```
+
+## 测试与验证
+
+### 后端测试
+
+```bash
+cd apps/api
+pytest -q
+```
+
+### 前端构建验证
+
+```bash
+cd apps/web
 npm run build
 ```
 
+### MVP Smoke Flow
+
+```bash
+cd apps/api
+pytest tests/test_mvp_smoke.py -q
+```
+
+也可以参考 [docs/mvp-smoke-test.md](F:\codebaby\ThirdEye\docs\mvp-smoke-test.md) 做手动联调。
+
+## 模型提供方配置
+
+在左下角齿轮进入 `/settings` 页面后可以创建和测试 provider，旧地址 `/settings/models` 仍可用。
+
+- `openai`：可使用 `responses`
+- `openai_compatible`：MVP 只支持 `chat_completions`，并且必须提供 `base_url`
+
+说明：
+
+- API key 会在 API 响应中脱敏
+- 当前 MVP 仍将 provider 配置保存在本地 JSON 中
+- “发送测试报文” 会真实调用模型 API，不再只是本地配置校验
+- 生产环境应改为使用加密存储或 secret manager
+
+## 后端 Agent 架构
+
+后端调用统一收口在 `apps/api/app/agents/`：
+
+- `sdk_runtime.py`：从本仓库 `src/agents` 导入本地 Agents SDK，实现 `Runner`、模型绑定和 `SQLiteSession`
+- `review.py`：单轮结构化评审，优先走 Agents SDK，失败时回退 deterministic workflow
+- `distillation.py`：Playbook 蒸馏，优先走 Agents SDK，失败时回退 deterministic workflow
+- `sdk_chat.py`：多轮评审会话，使用 `SQLiteSession` 维护会话记忆
+- `model_providers/adapter.py`：模型连通性测试通过 Agents SDK 发送真实测试报文
+
+运行中的后端会打印 Agents SDK 生命周期日志，默认输出到 API 进程控制台：
+
+- agent start / end
+- llm turn start / end
+- tool start / end
+- tool 参数摘要、tool 返回结果摘要、turn 次数、provider id、model
+
+依赖对齐基于以下核心约束：
+
+- `openai>=2.26.0,<3`
+- `openai-agents==0.17.0`
+- `pydantic>=2.12.2,<3`
+- `griffelib>=2,<3`
+- `mcp>=1.19.0,<2`
+- `websockets>=15.0,<17`
+
+## 主要路由
+
+后端：
+
+- `GET /health`
+- `POST /projects/scan`
+- `POST /projects`
+- `GET /projects`
+- `POST /playbooks/distill`
+- `GET /playbooks`
+- `GET /playbooks/{playbook_id}`
+- `POST /reviews`
+- `GET /reviews/{review_id}`
+- `POST /reviews/sessions`
+- `GET /reviews/sessions/{session_id}`
+- `POST /reviews/sessions/{session_id}/messages`
+- `GET /model-providers`
+- `POST /model-providers`
+- `POST /model-providers/{provider_id}/test`
+
+前端：
+
+- `/projects`
+- `/playbooks`
+- `/playbooks/{id}`
+- `/settings`
+- `/settings/models`
+- `/review`
+
 ## 项目结构
 
-```
+```text
 ThirdEye/
 ├── apps/
-│   ├── api/              # FastAPI 后端
+│   ├── api/
 │   │   ├── app/
-│   │   │   ├── api/      # REST API 路由
-│   │   │   ├── core/     # 核心配置
-│   │   │   ├── schemas/  # 数据模型
-│   │   │   ├── services/ # 业务服务
-│   │   │   └── main.py   # 应用入口
-│   │   └── tests/        # 测试
-│   └── web/              # Next.js 前端
+│   │   │   ├── agents/
+│   │   │   ├── api/
+│   │   │   ├── core/
+│   │   │   ├── schemas/
+│   │   │   └── services/
+│   │   └── tests/
+│   └── web/
+│       └── src/
+├── src/
+│   └── agents/
 ├── data/
-│   └── playbooks/        # 生成的 playbook 存储
-├── docs/                 # 产品文档
-└── oss-skill/            # 方法论参考
+│   ├── audit/
+│   ├── model-providers/
+│   ├── playbooks/
+│   ├── projects/
+│   └── reviews/
+├── docs/
+└── examples/
 ```
-
-## 核心概念
-
-### 项目蒸馏
-
-系统读取项目的代码、文档、测试和配置，提炼出：
-- 架构边界和模块依赖
-- API 设计规范
-- 状态管理策略
-- 依赖引入规则
-- 测试策略
-- 反模式清单
-
-### Playbook Skill
-
-每个项目生成的评审标准，包含：
-- 核心维护共识
-- 结构化规则
-- 证据来源
-- 评审流程
-- 检查清单
-
-### 技术方案评审
-
-输入技术方案，选择对应 playbook，获取：
-- 总体判断（通过/有条件通过/建议修改/不建议采用）
-- 关键风险
-- 与项目规则的冲突点
-- 建议改法
-- 必须补充的信息
-- 验证要求
-- 证据等级
-
-## API 端点
-
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| GET | `/health` | 健康检查 |
-| POST | `/api/projects` | 创建项目 |
-| GET | `/api/projects` | 项目列表 |
-| POST | `/api/playbooks` | 生成 playbook |
-| GET | `/api/playbooks` | Playbook 列表 |
-| POST | `/api/reviews` | 技术方案评审 |
-| GET/POST | `/api/model-providers` | 模型配置 |
 
 ## 开发原则
 
-1. **代码优先**: 先读取代码结构，再读取文档
-2. **多源采集**: 代码、文档、测试、配置、示例
-3. **三重验证**: 跨文件复现、能指导新方案、有项目特异性
-4. **证据分级**: confirmed | inferred | preference | unknown
-5. **诚实边界**: 证据不足时明确说明，不虚构结论
+1. 代码优先，再读文档
+2. 多源采集：代码、文档、测试、配置
+3. 证据分级：`confirmed | inferred | preference | unknown`
+4. 证据不足时明确暴露不确定性
+5. 敏感内容不进入证据摘要和审计日志
 
-## 非目标 (MVP)
+## 当前限制
 
-- 不做代码评审、diff review、PR review
+- 本地 `src/agents` 与 Python 环境依赖需要保持对齐，升级 SDK 时要同步检查 `openai / pydantic / griffelib / mcp`
+- 数据存储仍为本地 JSON/Markdown，不适合生产
+- Review 结果目前以项目规则和基础 heuristics 为主，不是完整 agentic reasoning 系统
+- 当前测试仍有若干 `datetime.utcnow()` 弃用 warning，尚未清理
+
+## 明确非目标
+
+- 不做 PR review
+- 不做 diff review
 - 不接入 GitHub/GitLab
 - 不自动修改代码
 - 不做 IDE 插件

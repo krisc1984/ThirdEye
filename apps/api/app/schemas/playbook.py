@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field, field_validator
 EvidenceLevel = Literal["confirmed", "inferred", "preference", "unknown"]
 RuleSeverity = Literal["blocker", "major", "minor", "nit"]
 PlaybookStatus = Literal["draft", "active", "archived"]
+ExecutionMode = Literal["deterministic", "llm"]
+OrchestrationMode = Literal["playbook", "project_skill_agent"]
 
 
 class EvidenceItem(BaseModel):
@@ -46,7 +48,12 @@ class PlaybookMetadata(BaseModel):
     name: str
     version: str
     status: PlaybookStatus = "draft"
+    execution_mode: ExecutionMode = "deterministic"
+    orchestration_mode: OrchestrationMode = "playbook"
+    resolved_provider_id: str | None = None
+    execution_note: str | None = None
     skill_path: Path
+    agent_skill_path: Path | None = None
     rules_path: Path
     evidence_path: Path
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -58,4 +65,3 @@ class PlaybookMetadata(BaseModel):
         if len(parts) != 3 or any(not part.isdigit() for part in parts):
             raise ValueError("version must use semantic version format, e.g. 1.0.0")
         return value
-
