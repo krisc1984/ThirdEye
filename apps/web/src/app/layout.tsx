@@ -209,6 +209,20 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
         }
 
+        .workspace-brand__mark--image {
+          overflow: hidden;
+          background: rgba(255, 255, 255, 0.9);
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.9),
+            0 8px 18px rgba(54, 72, 98, 0.12);
+        }
+
+        .workspace-brand__logo {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+        }
+
         .workspace-brand strong,
         .workspace-panel__header strong,
         .workspace-topbar__title strong {
@@ -660,7 +674,94 @@ export default function RootLayout({ children }: { children: ReactNode }) {
 
         .workspace-message__body p {
           margin: 8px 0 0;
-          white-space: pre-wrap;
+        }
+
+        .workspace-markdown {
+          display: grid;
+          gap: 10px;
+          margin-top: 8px;
+          min-width: 0;
+        }
+
+        .workspace-markdown h3,
+        .workspace-markdown h4 {
+          margin: 0;
+          color: var(--text);
+          line-height: 1.35;
+        }
+
+        .workspace-markdown h3 {
+          font-size: 1.02rem;
+        }
+
+        .workspace-markdown h4 {
+          font-size: 0.94rem;
+        }
+
+        .workspace-markdown p,
+        .workspace-markdown ul,
+        .workspace-markdown ol,
+        .workspace-markdown blockquote,
+        .workspace-markdown pre {
+          margin: 0;
+        }
+
+        .workspace-markdown p,
+        .workspace-markdown li,
+        .workspace-markdown blockquote {
+          color: var(--muted);
+          line-height: 1.7;
+          word-break: break-word;
+        }
+
+        .workspace-markdown ul,
+        .workspace-markdown ol {
+          padding-left: 20px;
+          display: grid;
+          gap: 6px;
+        }
+
+        .workspace-markdown blockquote {
+          padding: 10px 14px;
+          border-left: 3px solid rgba(79, 124, 255, 0.45);
+          border-radius: 0 12px 12px 0;
+          background: rgba(79, 124, 255, 0.06);
+        }
+
+        .workspace-markdown pre {
+          padding: 14px;
+          border-radius: 14px;
+          overflow: auto;
+          background: rgba(18, 28, 45, 0.96);
+          color: #edf3ff;
+          font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+          font-size: 0.84rem;
+          line-height: 1.65;
+        }
+
+        .workspace-markdown code {
+          padding: 0.1em 0.35em;
+          border-radius: 6px;
+          background: rgba(20, 29, 43, 0.08);
+          color: var(--navy);
+          font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+          font-size: 0.88em;
+        }
+
+        .workspace-markdown pre code {
+          padding: 0;
+          background: transparent;
+          color: inherit;
+        }
+
+        .workspace-markdown a {
+          color: var(--blue);
+          text-decoration: none;
+        }
+
+        .workspace-markdown strong {
+          color: var(--text);
+          font-weight: 600;
         }
 
         .workspace-starters,
@@ -712,31 +813,6 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           border-radius: 24px;
         }
 
-        .workspace-skill-hints {
-          display: grid;
-          gap: 10px;
-          margin-bottom: 12px;
-        }
-
-        .workspace-skill-hints > span {
-          font-size: 0.82rem;
-          color: var(--muted);
-        }
-
-        .workspace-skill-hints__list {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 10px;
-        }
-
-        .workspace-skill-hints__list button {
-          padding: 8px 12px;
-          border-radius: 999px;
-          border: 1px solid var(--line);
-          background: rgba(255, 255, 255, 0.86);
-          cursor: pointer;
-        }
-
         .workspace-composer textarea {
           min-height: 116px;
           padding: 14px 16px;
@@ -759,6 +835,122 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         .workspace-composer__control {
           display: grid;
           gap: 6px;
+        }
+
+        .workspace-context-meter {
+          position: relative;
+          display: grid;
+          place-items: center;
+          width: 44px;
+          height: 44px;
+          border: 1px solid rgba(68, 119, 248, 0.24);
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.9);
+          cursor: default;
+          outline: none;
+          box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+        }
+
+        .workspace-context-meter--idle {
+          border-color: var(--line);
+        }
+
+        .workspace-context-meter__ring {
+          display: grid;
+          place-items: center;
+          width: 34px;
+          height: 34px;
+          border-radius: 999px;
+          padding: 3px;
+        }
+
+        .workspace-context-meter__core {
+          display: grid;
+          place-items: center;
+          width: 100%;
+          height: 100%;
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.96);
+          color: var(--text);
+          font-size: 0.62rem;
+          font-weight: 700;
+        }
+
+        .workspace-context-meter__popover {
+          position: absolute;
+          left: 50%;
+          bottom: calc(100% + 12px);
+          z-index: 20;
+          display: grid;
+          gap: 12px;
+          min-width: 260px;
+          padding: 14px;
+          border: 1px solid rgba(210, 222, 243, 0.9);
+          border-radius: 18px;
+          background: rgba(255, 252, 248, 0.98);
+          box-shadow: 0 20px 48px rgba(15, 23, 42, 0.14);
+          opacity: 0;
+          pointer-events: none;
+          transform: translate(-50%, 8px);
+          transition: opacity 140ms ease, transform 140ms ease;
+        }
+
+        .workspace-context-meter:hover .workspace-context-meter__popover,
+        .workspace-context-meter:focus-visible .workspace-context-meter__popover {
+          opacity: 1;
+          transform: translate(-50%, 0);
+        }
+
+        .workspace-context-meter__popover-head {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+        }
+
+        .workspace-context-meter__popover-head div {
+          display: grid;
+          gap: 4px;
+        }
+
+        .workspace-context-meter__popover-head strong:last-child {
+          font-size: 1.45rem;
+          line-height: 1;
+        }
+
+        .workspace-context-meter__popover-head span,
+        .workspace-context-meter__stats span,
+        .workspace-context-meter__breakdown span,
+        .workspace-context-meter__hint {
+          color: var(--muted);
+          font-size: 0.78rem;
+        }
+
+        .workspace-context-meter__stats,
+        .workspace-context-meter__breakdown {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 10px;
+        }
+
+        .workspace-context-meter__stats div,
+        .workspace-context-meter__breakdown div {
+          display: grid;
+          gap: 4px;
+        }
+
+        .workspace-context-meter__stats strong,
+        .workspace-context-meter__breakdown strong {
+          font-size: 0.92rem;
+        }
+
+        .workspace-context-meter__breakdown {
+          padding-top: 12px;
+          border-top: 1px solid rgba(226, 232, 240, 0.92);
+        }
+
+        .workspace-context-meter__hint {
+          margin: 0;
         }
 
         .workspace-composer__control span {
@@ -822,10 +1014,55 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           gap: 10px;
         }
 
+        .workspace-knowledge-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+        }
+
+        .workspace-knowledge-actions button {
+          padding: 8px 12px;
+          border-radius: 12px;
+          border: 1px solid var(--line);
+          background: rgba(255, 255, 255, 0.86);
+          cursor: pointer;
+        }
+
+        .workspace-knowledge-actions button:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
         .workspace-doc-tree,
         .workspace-doc-group {
           display: grid;
           gap: 10px;
+        }
+
+        .workspace-doc-node,
+        .workspace-doc-node__children {
+          display: grid;
+          gap: 8px;
+        }
+
+        .workspace-doc-node__dir {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          min-width: 0;
+          padding: 8px 10px;
+          border-radius: 12px;
+          border: 1px solid rgba(33, 53, 88, 0.06);
+          background: rgba(255, 255, 255, 0.62);
+          cursor: pointer;
+          text-align: left;
+        }
+
+        .workspace-doc-node__dir strong {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
         .workspace-doc-item {
@@ -873,6 +1110,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
 
         .workspace-upload {
           width: 100%;
+          display: inline-flex;
+          justify-content: center;
+          align-items: center;
         }
 
         .workspace-summary h3 {
@@ -899,6 +1139,17 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           background: rgba(255, 184, 77, 0.14);
           color: #d48a18;
           border-color: rgba(255, 184, 77, 0.18);
+        }
+
+        .workspace-summary__link {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 10px 14px;
+          border-radius: 12px;
+          border: 1px solid rgba(255, 184, 77, 0.18);
+          background: rgba(255, 184, 77, 0.14);
+          color: #d48a18;
         }
 
         .workspace-session-item {
@@ -937,6 +1188,54 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           border: 1px solid rgba(255, 93, 84, 0.14);
         }
 
+        .workspace-message--tool .workspace-message__body {
+          gap: 10px;
+        }
+
+        .workspace-tool-call {
+          display: grid;
+          gap: 10px;
+        }
+
+        .workspace-tool-call > p {
+          margin: 0;
+        }
+
+        .workspace-tool-call__details {
+          border: 1px solid var(--line);
+          border-radius: 14px;
+          background: rgba(255, 255, 255, 0.78);
+          overflow: hidden;
+        }
+
+        .workspace-tool-call__details summary {
+          cursor: pointer;
+          list-style: none;
+          padding: 12px 14px;
+          font-size: 0.92rem;
+          font-weight: 600;
+          color: var(--navy);
+          background: rgba(247, 249, 252, 0.95);
+        }
+
+        .workspace-tool-call__details summary::-webkit-details-marker {
+          display: none;
+        }
+
+        .workspace-tool-call__details pre {
+          margin: 0;
+          padding: 14px;
+          max-height: 260px;
+          overflow: auto;
+          white-space: pre-wrap;
+          word-break: break-word;
+          font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+          font-size: 0.84rem;
+          line-height: 1.6;
+          color: var(--navy);
+          background: rgba(255, 255, 255, 0.86);
+        }
+
         .settings-workspace {
           display: grid;
           grid-template-columns: 300px minmax(0, 1fr) 340px;
@@ -948,6 +1247,36 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           border: 1px solid rgba(255, 255, 255, 0.7);
           box-shadow: var(--shadow-lg);
           backdrop-filter: blur(18px);
+        }
+
+        .settings-section-tabs {
+          display: inline-flex;
+          align-items: center;
+          gap: 10px;
+          padding: 10px;
+          border-radius: 18px;
+          border: 1px solid var(--line);
+          background: rgba(255, 255, 255, 0.72);
+          box-shadow: var(--shadow-sm);
+          backdrop-filter: blur(12px);
+        }
+
+        .settings-section-tabs__item {
+          padding: 10px 14px;
+          border-radius: 12px;
+          color: var(--muted);
+          transition: 160ms ease;
+        }
+
+        .settings-section-tabs__item:hover {
+          color: var(--navy);
+          background: rgba(255, 255, 255, 0.84);
+        }
+
+        .settings-section-tabs__item--active {
+          color: white;
+          background: linear-gradient(135deg, #213558, #314a78);
+          box-shadow: 0 12px 24px rgba(33, 53, 88, 0.18);
         }
 
         .settings-workspace__sidebar,
@@ -1107,6 +1436,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           gap: 8px;
         }
 
+        .settings-agent-card__description {
+          margin: 0;
+          color: var(--muted);
+          line-height: 1.7;
+        }
+
         .settings-provider-card__meta span {
           padding: 6px 10px;
           border-radius: 999px;
@@ -1152,13 +1487,38 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         }
 
         .settings-field input,
-        .settings-field select {
+        .settings-field select,
+        .settings-field textarea {
           width: 100%;
           padding: 12px 14px;
           border-radius: 14px;
           border: 1px solid var(--line);
           background: rgba(255, 255, 255, 0.82);
           color: var(--text);
+        }
+
+        .settings-field textarea {
+          resize: vertical;
+          min-height: 320px;
+          line-height: 1.7;
+        }
+
+        .settings-upload {
+          display: grid;
+          gap: 10px;
+          padding: 16px;
+          border-radius: 18px;
+          border: 1px dashed var(--line-strong);
+          background: rgba(255, 255, 255, 0.8);
+          cursor: pointer;
+        }
+
+        .settings-upload input {
+          width: 100%;
+        }
+
+        .settings-upload span {
+          color: var(--muted);
         }
 
         .settings-field--full {
@@ -1238,6 +1598,249 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           color: var(--navy);
         }
 
+        .settings-response-block--prompt code {
+          max-height: 420px;
+          overflow: auto;
+          font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+          font-size: 0.84rem;
+          line-height: 1.7;
+        }
+
+        .report-shell {
+          display: grid;
+          grid-template-columns: 260px minmax(0, 1fr) 360px;
+          gap: 18px;
+          min-height: calc(100vh - 110px);
+          padding: 12px;
+          border-radius: 28px;
+          background: rgba(255, 255, 255, 0.56);
+          border: 1px solid rgba(255, 255, 255, 0.7);
+          box-shadow: var(--shadow-lg);
+          backdrop-filter: blur(18px);
+        }
+
+        .report-sidebar,
+        .report-rightbar,
+        .report-main {
+          display: grid;
+          gap: 16px;
+          align-content: start;
+          min-width: 0;
+        }
+
+        .report-editor-panel {
+          min-height: calc(100vh - 180px);
+        }
+
+        .report-editor-grid {
+          display: grid;
+          grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+          gap: 16px;
+          min-height: 620px;
+        }
+
+        .report-editor-grid--single {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .report-markdown-editor {
+          width: 100%;
+          min-height: 620px;
+          padding: 18px;
+          border-radius: 18px;
+          border: 1px solid var(--line);
+          background: rgba(255, 255, 255, 0.88);
+          color: var(--text);
+          resize: vertical;
+          line-height: 1.7;
+          font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+          font-size: 0.92rem;
+        }
+
+        .report-preview-panel {
+          display: grid;
+          gap: 12px;
+          padding: 16px;
+          border-radius: 18px;
+          border: 1px solid var(--line);
+          background: rgba(255, 255, 255, 0.8);
+          overflow: auto;
+        }
+
+        .report-diff-panel {
+          display: grid;
+          gap: 12px;
+          padding: 16px;
+          border-radius: 18px;
+          border: 1px solid var(--line);
+          background: rgba(255, 255, 255, 0.82);
+        }
+
+        .report-diff-panel__actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+        }
+
+        .report-diff-panel__actions button {
+          padding: 8px 12px;
+          border-radius: 12px;
+          border: 1px solid var(--line);
+          background: rgba(255, 255, 255, 0.86);
+          cursor: pointer;
+        }
+
+        .report-diff-list {
+          display: grid;
+          gap: 6px;
+          max-height: 320px;
+          overflow: auto;
+        }
+
+        .report-diff-row {
+          margin: 0;
+          padding: 10px 12px;
+          border-radius: 10px;
+          white-space: pre-wrap;
+          word-break: break-word;
+          font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+          font-size: 0.84rem;
+        }
+
+        .report-diff-row--added {
+          background: rgba(232, 248, 243, 0.92);
+          color: #1f7c5e;
+        }
+
+        .report-diff-row--removed {
+          background: rgba(255, 239, 238, 0.92);
+          color: #b34b46;
+        }
+
+        .report-diff-row--same {
+          background: rgba(247, 249, 252, 0.88);
+          color: var(--muted);
+        }
+
+        .report-preview-panel__header,
+        .report-conversation-item__meta {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 10px;
+        }
+
+        .report-mode-toggle {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 6px;
+          border-radius: 14px;
+          border: 1px solid var(--line);
+          background: rgba(255, 255, 255, 0.82);
+        }
+
+        .report-mode-toggle__button {
+          padding: 8px 12px;
+          border-radius: 10px;
+          color: var(--muted);
+          cursor: pointer;
+        }
+
+        .report-mode-toggle__button--active {
+          color: white;
+          background: linear-gradient(135deg, #213558, #314a78);
+        }
+
+        .report-reference-list,
+        .report-conversation-list,
+        .report-assistant-thread {
+          display: grid;
+          gap: 10px;
+        }
+
+        .report-reference-item,
+        .report-conversation-item,
+        .report-assistant-message {
+          display: grid;
+          gap: 6px;
+          padding: 14px;
+          border-radius: 16px;
+          border: 1px solid var(--line);
+          background: rgba(255, 255, 255, 0.82);
+        }
+
+        .report-reference-item small,
+        .report-conversation-item__meta span {
+          color: var(--muted);
+        }
+
+        .report-reference-item__link,
+        .report-conversation-item__summary {
+          width: 100%;
+          padding: 0;
+          text-align: left;
+          cursor: pointer;
+        }
+
+        .report-reference-item__link {
+          font-weight: 700;
+          color: var(--navy);
+        }
+
+        .report-reference-item__link:hover {
+          color: var(--blue);
+        }
+
+        .report-conversation-item__summary {
+          display: grid;
+          gap: 8px;
+        }
+
+        .report-conversation-item__single-line {
+          display: block;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          color: var(--muted);
+          line-height: 1.6;
+        }
+
+        .report-assistant-message--assistant {
+          background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 255, 0.94));
+        }
+
+        .report-assistant-message--user {
+          background: linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(247, 245, 240, 0.9));
+        }
+
+        .report-assistant-composer {
+          display: grid;
+          gap: 10px;
+        }
+
+        .report-assistant-composer textarea {
+          width: 100%;
+          padding: 14px 16px;
+          border-radius: 16px;
+          border: 1px solid var(--line);
+          background: rgba(255, 255, 255, 0.86);
+          color: var(--text);
+          resize: vertical;
+          line-height: 1.7;
+        }
+
+        .report-assistant-composer button {
+          justify-self: end;
+          padding: 10px 16px;
+          border-radius: 12px;
+          border: 1px solid var(--line);
+          background: linear-gradient(135deg, #213558, #314a78);
+          color: white;
+          cursor: pointer;
+        }
+
         .panel,
         .subpanel,
         .page-stack,
@@ -1288,16 +1891,23 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             grid-template-columns: 1fr;
           }
 
+          .report-shell {
+            grid-template-columns: 1fr;
+          }
+
           .workspace-sidebar,
           .workspace-rightbar,
           .settings-workspace__sidebar,
-          .settings-workspace__right {
+          .settings-workspace__right,
+          .report-sidebar,
+          .report-rightbar {
             grid-template-columns: 1fr;
             align-self: stretch;
           }
 
           .workspace-main,
-          .settings-workspace__main {
+          .settings-workspace__main,
+          .report-main {
             order: -1;
           }
 
@@ -1325,7 +1935,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           }
 
           .workspace-shell,
-          .settings-workspace {
+          .settings-workspace,
+          .report-shell {
             padding: 10px;
             border-radius: 22px;
           }
@@ -1333,7 +1944,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           .workspace-capabilities,
           .workspace-toolbar,
           .settings-stat-grid,
-          .settings-form-grid {
+          .settings-form-grid,
+          .report-editor-grid {
             grid-template-columns: 1fr;
           }
 

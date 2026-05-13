@@ -2,6 +2,7 @@ export type Project = {
   id: string;
   name: string;
   root_path: string;
+  knowledge_root_path?: string | null;
   slug: string;
   languages: string[];
   frameworks: string[];
@@ -83,6 +84,16 @@ export type ModelProviderConfig = {
   tracing_enabled?: boolean;
 };
 
+export type BusinessAgentConfig = {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  system_prompt: string;
+  status: "active" | "draft";
+  is_default: boolean;
+};
+
 export type ModelProviderTestResult = {
   provider_id: string;
   ok: boolean;
@@ -129,9 +140,34 @@ export type ReviewResponse = {
 
 export type ReviewChatMessage = {
   id: string;
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool" | "llm";
   content: string;
+  runtime_id?: string | null;
+  call_status?: "running" | "success" | "error" | null;
+  provider_id?: string | null;
+  model_name?: string | null;
+  tool_name?: string | null;
+  tool_call_id?: string | null;
+  tool_arguments?: string | null;
+  tool_result?: string | null;
   created_at: string;
+};
+
+export type ReviewSessionContextUsageBreakdown = {
+  messages_tokens: number;
+  system_prompt_tokens: number;
+  playbook_tokens: number;
+};
+
+export type ReviewSessionContextUsage = {
+  model_name?: string | null;
+  provider_name?: string | null;
+  context_window: number;
+  used_tokens: number;
+  remaining_tokens: number;
+  usage_percent: number;
+  breakdown: ReviewSessionContextUsageBreakdown;
+  updated_at: string;
 };
 
 export type ReviewConversationSession = {
@@ -141,20 +177,91 @@ export type ReviewConversationSession = {
   mode: "quick" | "standard" | "strict";
   status: "idle" | "running";
   resume_available: boolean;
-  resume_reason?: "interruption" | "error" | "cancelled" | null;
+  resume_reason?: "tool_approval" | "runtime_error" | "cancelled_by_user" | null;
   execution_mode: "deterministic" | "llm";
   resolved_provider_id?: string | null;
   execution_note?: string | null;
   latest_summary?: string | null;
   last_review?: ReviewResponse | null;
+  context_usage?: ReviewSessionContextUsage | null;
   messages: ReviewChatMessage[];
   created_at: string;
   updated_at: string;
 };
 
+export type ReviewSessionEvent = {
+  session_id: string;
+  sequence: number;
+  event_type: string;
+  timestamp: string;
+  payload: Record<string, unknown>;
+};
+
+export type ReviewReportAssistantResponse = {
+  reply: string;
+  suggested_markdown: string;
+  execution_mode: "deterministic" | "llm";
+  resolved_provider_id?: string | null;
+  execution_note?: string | null;
+};
+
 export type SkillListItem = {
   name: string;
   description: string;
+};
+
+export type ManagedSkillSummary = {
+  name: string;
+  description: string;
+  enabled: boolean;
+  source: "builtin" | "uploaded";
+  installed_at?: string | null;
+  path: string;
+};
+
+export type ManagedSkillDetail = ManagedSkillSummary & {
+  content: string;
+};
+
+export type KnowledgeWorkspaceSettings = {
+  default_root_path?: string | null;
+};
+
+export type KnowledgeWorkspaceBinding = {
+  project_id?: string | null;
+  default_root_path?: string | null;
+  project_root_path?: string | null;
+  effective_root_path?: string | null;
+  scope: "global" | "project" | "unconfigured";
+  exists: boolean;
+};
+
+export type KnowledgeWorkspaceItem = {
+  name: string;
+  relative_path: string;
+  path: string;
+  is_dir: boolean;
+  size_bytes: number;
+  updated_at: string;
+};
+
+export type KnowledgeWorkspaceListing = {
+  root_path?: string | null;
+  query: string;
+  items: KnowledgeWorkspaceItem[];
+  total_items: number;
+};
+
+export type KnowledgeWorkspaceUploadResult = {
+  root_path: string;
+  uploaded_files: string[];
+};
+
+export type KnowledgeWorkspaceFileContent = {
+  root_path: string;
+  relative_path: string;
+  content: string;
+  truncated: boolean;
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -235,6 +342,31 @@ export function createModelProvider(input: ModelProviderConfig) {
   });
 }
 
+export function listBusinessAgents() {
+  return request<BusinessAgentConfig[]>("/agent-configs");
+}
+
+export function createBusinessAgent(input: BusinessAgentConfig) {
+  return request<BusinessAgentConfig>("/agent-configs", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export function updateBusinessAgent(agentId: string, input: BusinessAgentConfig) {
+  return request<BusinessAgentConfig>(`/agent-configs/${agentId}`, {
+    method: "PUT",
+    body: JSON.stringify(input)
+  });
+}
+
+export function activateBusinessAgent(agentId: string) {
+  return request<BusinessAgentConfig>(`/agent-configs/${agentId}/activate`, {
+    method: "POST",
+    body: JSON.stringify({ id: agentId })
+  });
+}
+
 export function listModelProviders() {
   return request<ModelProviderConfig[]>("/model-providers");
 }
@@ -269,6 +401,14 @@ export function getReviewSession(sessionId: string) {
   return request<ReviewConversationSession>(`/reviews/sessions/${sessionId}`);
 }
 
+export function getPlaybookById(playbookId: string) {
+  return request<PlaybookDetail>(`/playbooks/${playbookId}`);
+}
+
+export function getReviewSessionEventsUrl(sessionId: string) {
+  return `${API_BASE}/reviews/sessions/${sessionId}/events`;
+}
+
 export function sendReviewMessage(sessionId: string, input: { message: string }, signal?: AbortSignal) {
   return request<ReviewConversationSession>(`/reviews/sessions/${sessionId}/messages`, {
     method: "POST",
@@ -289,6 +429,153 @@ export function resumeReviewSession(sessionId: string) {
   });
 }
 
+export function generateReviewReport(input: {
+  session_id: string;
+  playbook_id: string;
+  markdown: string;
+  instruction: string;
+}) {
+  return request<ReviewReportAssistantResponse>("/reviews/report-assistant", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
 export function listSkills() {
   return request<SkillListItem[]>("/skills");
+}
+
+export function listManagedSkills() {
+  return request<ManagedSkillSummary[]>("/skills/manage");
+}
+
+export function getManagedSkill(name: string) {
+  return request<ManagedSkillDetail>(`/skills/manage/${encodeURIComponent(name)}`);
+}
+
+export function toggleManagedSkill(name: string, enabled: boolean) {
+  return request<ManagedSkillDetail>(`/skills/manage/${encodeURIComponent(name)}/toggle`, {
+    method: "POST",
+    body: JSON.stringify({ enabled })
+  });
+}
+
+export function deleteManagedSkill(name: string) {
+  return request<{ status: string; name: string }>(`/skills/manage/${encodeURIComponent(name)}`, {
+    method: "DELETE"
+  });
+}
+
+export async function uploadSkillZip(file: File) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const response = await fetch(`${API_BASE}/skills/manage/upload`, {
+    method: "POST",
+    body: formData,
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    const fallback = `Request failed: ${response.status}`;
+    try {
+      const body = (await response.json()) as { detail?: string };
+      throw new Error(body.detail ?? fallback);
+    } catch (error) {
+      if (error instanceof Error && error.message !== "Unexpected end of JSON input") {
+        throw error;
+      }
+      throw new Error(fallback);
+    }
+  }
+  return (await response.json()) as { installed: ManagedSkillDetail };
+}
+
+export function getKnowledgeWorkspaceSettings() {
+  return request<KnowledgeWorkspaceSettings>("/knowledge-workspace");
+}
+
+export function updateKnowledgeWorkspaceSettings(input: { root_path?: string | null }) {
+  return request<KnowledgeWorkspaceSettings>("/knowledge-workspace", {
+    method: "PUT",
+    body: JSON.stringify(input)
+  });
+}
+
+export function pickKnowledgeWorkspaceFolder() {
+  return request<{ path: string }>("/knowledge-workspace/pick-folder", {
+    method: "POST"
+  });
+}
+
+export function getKnowledgeWorkspaceBinding(projectId?: string | null) {
+  const params = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  return request<KnowledgeWorkspaceBinding>(`/knowledge-workspace/binding${params}`);
+}
+
+export function getProjectKnowledgeWorkspace(projectId: string) {
+  return request<KnowledgeWorkspaceBinding>(`/knowledge-workspace/projects/${projectId}`);
+}
+
+export function updateProjectKnowledgeWorkspace(projectId: string, input: { root_path?: string | null }) {
+  return request<KnowledgeWorkspaceBinding>(`/knowledge-workspace/projects/${projectId}`, {
+    method: "PUT",
+    body: JSON.stringify(input)
+  });
+}
+
+export function listKnowledgeWorkspaceFiles(input?: { project_id?: string | null; query?: string }) {
+  const search = new URLSearchParams();
+  if (input?.project_id) {
+    search.set("project_id", input.project_id);
+  }
+  if (input?.query) {
+    search.set("query", input.query);
+  }
+  const suffix = search.size ? `?${search.toString()}` : "";
+  return request<KnowledgeWorkspaceListing>(`/knowledge-workspace/files${suffix}`);
+}
+
+export async function uploadKnowledgeWorkspaceFiles(input: { project_id?: string | null; files: File[] }) {
+  const search = new URLSearchParams();
+  if (input.project_id) {
+    search.set("project_id", input.project_id);
+  }
+  const suffix = search.size ? `?${search.toString()}` : "";
+  const formData = new FormData();
+  for (const file of input.files) {
+    formData.append("files", file);
+  }
+  const response = await fetch(`${API_BASE}/knowledge-workspace/files/upload${suffix}`, {
+    method: "POST",
+    body: formData,
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    const fallback = `Request failed: ${response.status}`;
+    try {
+      const body = (await response.json()) as { detail?: string };
+      throw new Error(body.detail ?? fallback);
+    } catch (error) {
+      if (error instanceof Error && error.message !== "Unexpected end of JSON input") {
+        throw error;
+      }
+      throw new Error(fallback);
+    }
+  }
+  return (await response.json()) as KnowledgeWorkspaceUploadResult;
+}
+
+export function saveKnowledgeWorkspaceMarkdown(input: { project_id?: string | null; filename: string; content: string }) {
+  return request<KnowledgeWorkspaceUploadResult>("/knowledge-workspace/files/save-text", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export function getKnowledgeWorkspaceFileContent(input: { project_id?: string | null; relative_path: string }) {
+  const search = new URLSearchParams();
+  if (input.project_id) {
+    search.set("project_id", input.project_id);
+  }
+  search.set("relative_path", input.relative_path);
+  return request<KnowledgeWorkspaceFileContent>(`/knowledge-workspace/files/content?${search.toString()}`);
 }

@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.schemas.review import ReviewChatMessage, ReviewConversationSession, ReviewResponse
+from app.services.review_session_events import review_session_events
 from app.services.storage import JsonStorage
 
 
@@ -69,18 +70,162 @@ class ReviewSessionStore:
         *,
         role: str,
         content: str,
+        runtime_id: str | None = None,
+        call_status: str | None = None,
+        provider_id: str | None = None,
+        model_name: str | None = None,
+        tool_name: str | None = None,
+        tool_call_id: str | None = None,
+        tool_arguments: str | None = None,
+        tool_result: str | None = None,
     ) -> ReviewConversationSession:
         state = self.load(session_id).session
-        state.messages.append(
-            ReviewChatMessage(
-                id=f"msg_{uuid4().hex[:12]}",
-                role=role,  # type: ignore[arg-type]
-                content=content,
-            )
+        message = ReviewChatMessage(
+            id=f"msg_{uuid4().hex[:12]}",
+            role=role,  # type: ignore[arg-type]
+            content=content,
+            runtime_id=runtime_id,
+            call_status=call_status,  # type: ignore[arg-type]
+            provider_id=provider_id,
+            model_name=model_name,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            tool_arguments=tool_arguments,
+            tool_result=tool_result,
         )
+        state.messages.append(message)
         state.updated_at = datetime.utcnow()
         self._save(state)
+        review_session_events.publish(
+            session_id,
+            f"message.{role}",
+            {
+                "message": message.model_dump(mode="json"),
+                "status": state.status,
+                "updated_at": state.updated_at.isoformat(),
+            },
+        )
         return state
+
+    def upsert_runtime_message(
+        self,
+        session_id: str,
+        *,
+        role: str,
+        runtime_id: str,
+        content: str,
+        call_status: str,
+        provider_id: str | None = None,
+        model_name: str | None = None,
+        tool_name: str | None = None,
+        tool_call_id: str | None = None,
+        tool_arguments: str | None = None,
+        tool_result: str | None = None,
+    ) -> ReviewConversationSession:
+        state = self.load(session_id).session
+        existing = next(
+            (
+                message
+                for message in state.messages
+                if message.role == role and message.runtime_id == runtime_id
+            ),
+            None,
+        )
+        if existing is None:
+            message = ReviewChatMessage(
+                id=f"msg_{uuid4().hex[:12]}",
+                role=role,  # type: ignore[arg-type]
+                runtime_id=runtime_id,
+                content=content,
+                call_status=call_status,  # type: ignore[arg-type]
+                provider_id=provider_id,
+                model_name=model_name,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                tool_arguments=tool_arguments,
+                tool_result=tool_result,
+            )
+            state.messages.append(message)
+        else:
+            existing.content = content
+            existing.call_status = call_status  # type: ignore[assignment]
+            if provider_id is not None:
+                existing.provider_id = provider_id
+            if model_name is not None:
+                existing.model_name = model_name
+            if tool_name is not None:
+                existing.tool_name = tool_name
+            if tool_call_id is not None:
+                existing.tool_call_id = tool_call_id
+            if tool_arguments is not None:
+                existing.tool_arguments = tool_arguments
+            if tool_result is not None:
+                existing.tool_result = tool_result
+            message = existing
+        state.updated_at = datetime.utcnow()
+        self._save(state)
+        if call_status == "running":
+            event_type = f"{role}.start"
+        else:
+            event_type = f"{role}.end"
+        review_session_events.publish(
+            session_id,
+            event_type,
+            {
+                "message": message.model_dump(mode="json"),
+                "status": state.status,
+                "call_status": call_status,
+                "updated_at": state.updated_at.isoformat(),
+            },
+        )
+        return state
+
+    def upsert_tool_message(
+        self,
+        session_id: str,
+        *,
+        tool_call_id: str,
+        tool_name: str | None = None,
+        content: str | None = None,
+        tool_arguments: str | None = None,
+        tool_result: str | None = None,
+        call_status: str = "running",
+    ) -> ReviewConversationSession:
+        return self.upsert_runtime_message(
+            session_id,
+            role="tool",
+            runtime_id=tool_call_id,
+            content=content or f"{tool_name or 'tool'} 调用中",
+            call_status=call_status,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            tool_arguments=tool_arguments,
+            tool_result=tool_result,
+        )
+
+    def upsert_llm_message(
+        self,
+        session_id: str,
+        *,
+        runtime_id: str,
+        content: str,
+        call_status: str,
+        provider_id: str | None = None,
+        model_name: str | None = None,
+        tool_arguments: str | None = None,
+        tool_result: str | None = None,
+    ) -> ReviewConversationSession:
+        return self.upsert_runtime_message(
+            session_id,
+            role="llm",
+            runtime_id=runtime_id,
+            content=content,
+            call_status=call_status,
+            provider_id=provider_id,
+            model_name=model_name,
+            tool_arguments=tool_arguments,
+            tool_result=tool_result,
+        )
 
     def save_resume_state(
         self,
@@ -95,6 +240,15 @@ class ReviewSessionStore:
         state.resume_reason = resume_reason  # type: ignore[assignment]
         state.updated_at = datetime.utcnow()
         self._save(state)
+        review_session_events.publish(
+            session_id,
+            "session.resume_available",
+            {
+                "resume_available": state.resume_available,
+                "resume_reason": state.resume_reason,
+                "updated_at": state.updated_at.isoformat(),
+            },
+        )
         return state
 
     def load_resume_state(self, session_id: str) -> dict[str, Any]:
@@ -109,6 +263,15 @@ class ReviewSessionStore:
         state.resume_reason = None
         state.updated_at = datetime.utcnow()
         self._save(state)
+        review_session_events.publish(
+            session_id,
+            "session.resume_cleared",
+            {
+                "resume_available": state.resume_available,
+                "resume_reason": state.resume_reason,
+                "updated_at": state.updated_at.isoformat(),
+            },
+        )
         return state
 
     def mark_resume_available(
@@ -125,6 +288,16 @@ class ReviewSessionStore:
             state.execution_note = execution_note
         state.updated_at = datetime.utcnow()
         self._save(state)
+        review_session_events.publish(
+            session_id,
+            "session.resume_available",
+            {
+                "resume_available": state.resume_available,
+                "resume_reason": state.resume_reason,
+                "execution_note": state.execution_note,
+                "updated_at": state.updated_at.isoformat(),
+            },
+        )
         return state
 
     def attach_review_result(
@@ -147,6 +320,19 @@ class ReviewSessionStore:
         state.resume_reason = None
         state.updated_at = datetime.utcnow()
         self._save(state)
+        review_session_events.publish(
+            session_id,
+            "session.done",
+            {
+                "latest_summary": state.latest_summary,
+                "last_review": state.last_review.model_dump(mode="json") if state.last_review else None,
+                "execution_mode": state.execution_mode,
+                "resolved_provider_id": state.resolved_provider_id,
+                "execution_note": state.execution_note,
+                "resume_available": state.resume_available,
+                "updated_at": state.updated_at.isoformat(),
+            },
+        )
         resume_path = self.storage.root / "review-session-resume" / f"{session_id}.json"
         if resume_path.exists():
             resume_path.unlink()
@@ -165,6 +351,15 @@ class ReviewSessionStore:
             state.execution_note = execution_note
         state.updated_at = datetime.utcnow()
         self._save(state)
+        review_session_events.publish(
+            session_id,
+            "session.status",
+            {
+                "status": state.status,
+                "execution_note": state.execution_note,
+                "updated_at": state.updated_at.isoformat(),
+            },
+        )
         return state
 
     def open_sqlite_session(self, session_id: str) -> Any:

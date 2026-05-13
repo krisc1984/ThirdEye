@@ -5,10 +5,18 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from openai import AsyncOpenAI
-
 from app.schemas.model_provider import ModelProviderConfig
 from app.services.audit_log import AuditLogger
+
+API_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = API_ROOT.parents[2]
+import sys
+
+VENDOR_SITE = REPO_ROOT / ".vendor" / "py312"
+if str(VENDOR_SITE) not in sys.path and VENDOR_SITE.exists():
+    sys.path.insert(0, str(VENDOR_SITE))
+
+from openai import AsyncOpenAI
 
 
 class LLMClientError(RuntimeError):
@@ -16,6 +24,7 @@ class LLMClientError(RuntimeError):
 
 
 logger = logging.getLogger(__name__)
+MIN_PROVIDER_TIMEOUT_SECONDS = 150
 
 
 class LLMClient:
@@ -46,7 +55,7 @@ class LLMClient:
         client = AsyncOpenAI(
             api_key=config.api_key.get_secret_value() if config.api_key else None,
             base_url=config.base_url,
-            timeout=float(config.timeout_seconds),
+            timeout=float(max(config.timeout_seconds, MIN_PROVIDER_TIMEOUT_SECONDS)),
             max_retries=config.max_retries,
         )
 
@@ -100,7 +109,7 @@ class LLMClient:
         client = AsyncOpenAI(
             api_key=config.api_key.get_secret_value() if config.api_key else None,
             base_url=config.base_url,
-            timeout=float(config.timeout_seconds),
+            timeout=float(max(config.timeout_seconds, MIN_PROVIDER_TIMEOUT_SECONDS)),
             max_retries=config.max_retries,
         )
 
@@ -167,6 +176,11 @@ def summarize_provider_error(error: Exception) -> str:
     message = str(error).strip()
     if "Example Domain" in message:
         return "Provider base_url points to a placeholder page instead of an OpenAI-compatible API endpoint."
+    normalized = message.lower()
+    if "524" in normalized:
+        return "上游网关超时（524），模型服务长时间未返回结果。"
+    if "502" in normalized or "bad gateway" in normalized:
+        return "上游网关不可用（502 Bad Gateway），模型服务或中转网关当前异常。"
     if not message:
         return error.__class__.__name__
     if len(message) > 280:

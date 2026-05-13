@@ -1,35 +1,152 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
+import inspect
 from pathlib import Path
+import sys
+import types
 from uuid import uuid4
 
-from agents import ModelSettings, function_tool
+API_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = API_ROOT.parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+VENDOR_SITE = REPO_ROOT / ".vendor" / "py312"
+
+if str(VENDOR_SITE) not in sys.path and VENDOR_SITE.exists():
+    sys.path.insert(0, str(VENDOR_SITE))
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+if "griffe" not in sys.modules:
+    griffe_stub = types.ModuleType("griffe")
+
+    class _DocstringSectionKind:
+        text = "text"
+        parameters = "parameters"
+
+    class _DocstringSection:
+        def __init__(self, kind: str, value):
+            self.kind = kind
+            self.value = value
+
+    class _Docstring:
+        def __init__(self, text: str, lineno: int = 1, parser: str | None = None):
+            self.text = text
+
+        def parse(self):
+            lines = self.text.splitlines()
+            description_lines: list[str] = []
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    if description_lines:
+                        break
+                    continue
+                if stripped.startswith(("Args:", "Arguments:", "Parameters", ":param")):
+                    break
+                description_lines.append(stripped)
+            description = " ".join(description_lines).strip()
+            return [_DocstringSection(_DocstringSectionKind.text, description)] if description else []
+
+    griffe_stub.Docstring = _Docstring
+    griffe_stub.DocstringSectionKind = _DocstringSectionKind
+    sys.modules["griffe"] = griffe_stub
+
+from agents import ModelSettings
 from agents import Agent, RunState
 
-from app.agents.sdk_runtime import AgentResumeError, build_agent_model, build_run_config, build_sqlite_session, run_text_agent
+from app.agents.oss_skill_preflight import maybe_run_oss_skill_preflight as _maybe_run_oss_skill_preflight
+from app.agents.sdk_runtime import (
+    AgentResumeError,
+    build_agent_model,
+    build_log_context,
+    build_run_config,
+    build_sqlite_session,
+    run_text_agent,
+)
+from app.agents.tool import build_agent_tools
+from app.core.config import settings
 from app.model_providers.llm_client import summarize_provider_error
+from app.schemas.business_agent import BusinessAgentConfig
 from app.schemas.model_provider import ModelProviderConfig
 from app.schemas.playbook import EvidenceItem, PlaybookRule
 from app.schemas.review import ReviewResponse
+from app.services.business_agents import BusinessAgentService
+from app.services.knowledge_workspace import KnowledgeWorkspaceService
 from app.services.playbook_loader import LoadedPlaybook
 from app.services.review_sessions import ReviewSessionStore
-from app.services.storage import StorageError
-from scripts.skill_agent import (
-    MAX_READ_LIMIT,
-    MAX_WRITE_CONTENT_CHARS,
-    SkillLoader,
-    decode_text_arg,
-    run_bash,
-    run_edit,
-    run_list_skills,
-    run_read,
-    run_write,
-)
+from app.services.storage import JsonStorage, StorageError
 
-API_ROOT = Path(__file__).resolve().parents[2]
 
+def _persist_live_runtime_event(
+    session_store: ReviewSessionStore,
+    session_id: str,
+    event: dict[str, object],
+) -> None:
+    kind = str(event.get("kind") or "").strip()
+    phase = str(event.get("phase") or "").strip()
+    if kind == "tool":
+        tool_call_id = str(event.get("tool_call_id") or "").strip()
+        if not tool_call_id:
+            return
+        tool_name = str(event.get("tool_name") or "").strip() or None
+        if phase == "start":
+            session_store.upsert_tool_message(
+                session_id,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                content=f"{tool_name or 'tool'} 调用中",
+                tool_arguments=str(event.get("tool_arguments") or "") or None,
+                call_status="running",
+            )
+            return
+        if phase == "end":
+            ok = bool(event.get("ok", True))
+            session_store.upsert_tool_message(
+                session_id,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                content=f"{tool_name or 'tool'} {'调用完成' if ok else '调用失败'}",
+                tool_result=str(event.get("result") or "") or None,
+                call_status="success" if ok else "error",
+            )
+            return
+    if kind == "llm":
+        runtime_id = str(event.get("runtime_id") or "").strip()
+        if not runtime_id:
+            return
+        provider_id = str(event.get("provider_id") or "").strip() or None
+        model_name = str(event.get("model") or "").strip() or None
+        if phase == "start":
+            session_store.upsert_llm_message(
+                session_id,
+                runtime_id=runtime_id,
+                content=f"LLM 调用中 · {provider_id or 'provider'} / {model_name or 'model'}",
+                call_status="running",
+                provider_id=provider_id,
+                model_name=model_name,
+                tool_arguments=str(event.get("tool_arguments") or "") or None,
+            )
+            return
+        if phase == "end":
+            ok = bool(event.get("ok", True))
+            session_store.upsert_llm_message(
+                session_id,
+                runtime_id=runtime_id,
+                content=f"LLM {'调用完成' if ok else '调用失败'} · {provider_id or 'provider'} / {model_name or 'model'}",
+                call_status="success" if ok else "error",
+                provider_id=provider_id,
+                model_name=model_name,
+                tool_result=str(event.get("tool_result") or event.get("result") or "") or None,
+            )
+            return
+
+
+async def _run_text_agent_compat(**kwargs):
+    signature = inspect.signature(run_text_agent)
+    if "runtime_event_callback" not in signature.parameters:
+        kwargs.pop("runtime_event_callback", None)
+    return await run_text_agent(**kwargs)
 
 @dataclass(frozen=True)
 class AgentChatTurnResult:
@@ -38,59 +155,11 @@ class AgentChatTurnResult:
     execution_mode: str
     resolved_provider_id: str | None
     execution_note: str | None
+    tool_events: list[dict[str, object]] | None = None
 
 
 class InvalidResumeStateError(RuntimeError):
     pass
-
-
-def _normalize_allowed_roots(project_root_path: str, knowledge_base_path: str) -> list[Path]:
-    roots: list[Path] = []
-    if project_root_path.strip():
-        roots.append(Path(project_root_path).resolve())
-    roots.append(Path(knowledge_base_path).resolve())
-    deduped: list[Path] = []
-    for root in roots:
-        if root not in deduped:
-            deduped.append(root)
-    return deduped
-
-
-def _resolve_allowed_path(value: str, *, allowed_roots: list[Path], default_root: Path) -> Path:
-    raw = value.strip()
-    target = Path(raw) if raw else default_root
-    if not target.is_absolute():
-        target = (default_root / target).resolve()
-    else:
-        target = target.resolve()
-    if any(target == root or root in target.parents for root in allowed_roots):
-        return target
-    raise ValueError(
-        "path is outside the allowed roots; only the configured project directory and knowledge base directory are accessible"
-    )
-
-
-def _read_allowed_file_payload(path: str, *, allowed_roots: list[Path], default_root: Path) -> str:
-    target = _resolve_allowed_path(path, allowed_roots=allowed_roots, default_root=default_root)
-    if not target.exists():
-        return f"file not found: {target}"
-    if not target.is_file():
-        return f"path is not a file: {target}"
-    content = target.read_text(encoding="utf-8", errors="ignore")
-    clipped = content[:12000]
-    return json.dumps(
-        {
-            "path": str(target),
-            "truncated": len(content) > len(clipped),
-            "content": clipped,
-        },
-        ensure_ascii=False,
-    )
-
-
-def _load_skill_loader() -> SkillLoader:
-    skills_dir = API_ROOT / "skills"
-    return SkillLoader(skills_dir)
 
 
 def _resolve_provider_config(
@@ -152,21 +221,63 @@ def _build_rules_text(rules: list[PlaybookRule]) -> str:
     return "\n\n".join(sections)
 
 
+def _get_active_business_agent() -> BusinessAgentConfig:
+    service = BusinessAgentService(JsonStorage(settings.data_dir))
+    agents = service.list_agents()
+    for agent in agents:
+        if agent.is_default or agent.status == "active":
+            return agent
+    return agents[0]
+
+
 def _build_agent_instructions(*, project_root_path: str, knowledge_base_path: str) -> str:
+    skills_root_path = str((API_ROOT / "skills").resolve())
+    try:
+        active_agent = _get_active_business_agent()
+        role_prompt = active_agent.system_prompt
+        agent_name = active_agent.name
+    except Exception:
+        role_prompt = (
+            "你是专业的代码评审智能体。优先识别高风险缺陷、行为回归、边界条件遗漏、测试缺口与设计偏差。"
+            "输出保持结构化、直接，并给出可执行的修正建议。"
+        )
+        agent_name = "代码评审 Agent"
     return (
-        "你是 ThirdEye 的多轮技术评审 Agent。\n"
+        f"你当前扮演 ThirdEye 的业务智能体：{agent_name}。\n"
+        f"{role_prompt}\n"
         "你必须始终使用中文回复。\n"
         "你只能基于提供的项目空间目录、资料库目录、评审规则和对话上下文进行分析，禁止臆造仓库事实。\n"
         "当用户要求查看、总结、分析文件或目录内容时，你必须优先使用可用的 function tools 主动读取或检索信息，而不是要求用户手工粘贴文件内容。\n"
         "当用户提到技能、PDF、Word、Excel、Markdown、脚本或某类文件处理能力时，你必须先使用 list_skills 检查可用技能；如果存在相关技能，再使用 load_skill 加载技能详情后再回答。\n"
         "在没有先调用 list_skills 或 load_skill 之前，你禁止直接声称“没有某个技能”或“当前环境不支持某类能力”。\n"
-        "当你调用 write_file 或 edit_file 且内容包含多行、大段 Markdown、代码、引号或反斜杠时，优先使用 base64 字段传参，避免 JSON 转义损坏：write_file 用 content_base64，edit_file 用 old_text_base64/new_text_base64。\n"
+        "当你需要写入或修改文件时，只能使用 write_file_chunk 或 replace_in_file。\n"
+        "写入文件一律使用 write_file_chunk 分块写入：第一块用 mode='overwrite'，后续块用 mode='append'。\n"
+        "调用 write_file_chunk 时，必须同时提供 path 和 content；可选 mode 只能是 overwrite 或 append。\n"
+        "调用 replace_in_file 时，必须同时提供 path、old_text、new_text；缺少任一文本参数都是无效调用。\n"
+        "在写文件前，先在脑中构造完整内容，再一次性发起合法工具调用，不要用缺参调用试探工具。\n"
         "你在调用工具时，只允许访问以下目录：\n"
         f"1. 项目空间目录：{project_root_path or '(未提供)'}\n"
         f"2. 资料库目录：{knowledge_base_path}\n"
-        "如果用户请求超出这两个目录，必须明确拒绝并说明原因。\n"
+        f"3. 技能目录：{skills_root_path}\n"
+        "如果用户请求超出这三个目录，必须明确拒绝并说明原因。\n"
         "优先引用评审规则给出结构化、简洁、可执行的评审意见。"
     )
+
+
+def _resolve_knowledge_base_path(
+    *,
+    session_store: ReviewSessionStore,
+    session_project_id: str,
+    playbook_id: str,
+) -> str:
+    service = KnowledgeWorkspaceService(session_store.storage)
+    try:
+        binding = service.get_project_binding(session_project_id)
+    except Exception:
+        binding = None
+    if binding is not None and binding.effective_root_path is not None:
+        return str(binding.effective_root_path)
+    return str(session_store.storage.root / "playbooks" / playbook_id)
 
 
 def _select_tool_choice(user_message: str) -> str:
@@ -185,8 +296,8 @@ def _select_tool_choice(user_message: str) -> str:
         "rules.json",
     ]
     file_write_signals = [
-        "write_file",
-        "edit_file",
+        "write_file_chunk",
+        "replace_in_file",
         "修改文件",
         "写入文件",
         "编辑文件",
@@ -223,77 +334,6 @@ def _select_tool_choice(user_message: str) -> str:
     if any(token in normalized for token in [*file_read_signals, *file_write_signals, *skill_signals, *bash_signals]):
         return "required"
     return "auto"
-
-
-def _build_agent_tools(*, project_root_path: str, knowledge_base_path: str) -> list[object]:
-    allowed_roots = _normalize_allowed_roots(project_root_path, knowledge_base_path)
-    default_root = allowed_roots[0]
-    workdir = default_root
-    skill_loader = _load_skill_loader()
-
-    @function_tool(name_override="bash")
-    def bash(command: str) -> str:
-        """Run a shell command inside the allowed workspace root and return stdout/stderr."""
-        return run_bash(command, workdir)
-
-    @function_tool(name_override="read_file")
-    def read_file(path: str, limit: int = MAX_READ_LIMIT) -> str:
-        """Read a text file from the allowed project or knowledge base directories."""
-        return run_read(path, workdir, limit, allowed_roots)
-
-    @function_tool(name_override="write_file")
-    def write_file(path: str, content: str | None = None, content_base64: str | None = None) -> str:
-        """Write text content to an allowed file. Use content_base64 for long or multi-line UTF-8 text."""
-        try:
-            resolved_content = decode_text_arg(
-                plain_value=content,
-                base64_value=content_base64,
-                arg_name="content",
-            )
-        except ValueError as error:
-            return f"Error: {error}"
-        if len(resolved_content) > MAX_WRITE_CONTENT_CHARS:
-            return (
-                f"Error: write_file content too large ({len(resolved_content)} chars). "
-                f"Limit is {MAX_WRITE_CONTENT_CHARS}. Prefer edit_file for targeted updates."
-            )
-        return run_write(path, resolved_content, workdir, allowed_roots)
-
-    @function_tool(name_override="edit_file")
-    def edit_file(
-        path: str,
-        old_text: str | None = None,
-        new_text: str | None = None,
-        old_text_base64: str | None = None,
-        new_text_base64: str | None = None,
-    ) -> str:
-        """Replace the first occurrence of old_text with new_text in an allowed file. Use *_base64 for long or multi-line UTF-8 text."""
-        try:
-            resolved_old_text = decode_text_arg(
-                plain_value=old_text,
-                base64_value=old_text_base64,
-                arg_name="old_text",
-            )
-            resolved_new_text = decode_text_arg(
-                plain_value=new_text,
-                base64_value=new_text_base64,
-                arg_name="new_text",
-            )
-        except ValueError as error:
-            return f"Error: {error}"
-        return run_edit(path, resolved_old_text, resolved_new_text, workdir, allowed_roots)
-
-    @function_tool(name_override="load_skill")
-    def load_skill(name: str) -> str:
-        """Load the full body of a named skill from the local skills directory."""
-        return skill_loader.get_content(name)
-
-    @function_tool(name_override="list_skills")
-    def list_skills() -> str:
-        """List all available local skills with descriptions."""
-        return run_list_skills(skill_loader)
-
-    return [bash, read_file, write_file, edit_file, load_skill, list_skills]
 
 
 def _build_conversation_agent(
@@ -355,6 +395,24 @@ async def run_agent_chat_turn(
     user_message: str,
 ) -> AgentChatTurnResult:
     state = session_store.load(session_id).session
+    preflight_result = _maybe_run_oss_skill_preflight(user_message)
+    if preflight_result is not None:
+        review = _build_review_response(
+            playbook_id=playbook.metadata.id,
+            proposal=user_message,
+            assistant_text=preflight_result,
+            provider_id=None,
+            evidence=playbook.evidence,
+        )
+        return AgentChatTurnResult(
+            assistant_text=preflight_result,
+            review=review,
+            execution_mode="deterministic",
+            resolved_provider_id=None,
+            execution_note="Handled by deterministic oss-skill preflight shortcut.",
+            tool_events=None,
+        )
+
     history = [
         {"role": message.role, "content": message.content}
         for message in state.messages
@@ -366,7 +424,11 @@ async def run_agent_chat_turn(
         project_root_path = str(project_record.get("root_path", ""))
     except FileNotFoundError:
         project_root_path = ""
-    knowledge_base_path = str(session_store.storage.root / "playbooks" / playbook.metadata.id)
+    knowledge_base_path = _resolve_knowledge_base_path(
+        session_store=session_store,
+        session_project_id=session_project_id,
+        playbook_id=playbook.metadata.id,
+    )
     rules_text = _build_rules_text(playbook.rules)
     query = _build_agent_query(
         project_root_path=project_root_path,
@@ -395,19 +457,20 @@ async def run_agent_chat_turn(
             execution_mode="deterministic",
             resolved_provider_id=None,
             execution_note="No available model provider for multi-turn agent session.",
+            tool_events=None,
         )
     instructions = _build_agent_instructions(
         project_root_path=project_root_path,
         knowledge_base_path=knowledge_base_path,
     )
-    tools = _build_agent_tools(
+    tools = build_agent_tools(
         project_root_path=project_root_path,
         knowledge_base_path=knowledge_base_path,
     )
     tool_choice = _select_tool_choice(user_message)
 
     try:
-        run_result = await run_text_agent(
+        run_result = await _run_text_agent_compat(
             name="ThirdEye Review Conversation Agent",
             instructions=instructions,
             user_input=query,
@@ -415,6 +478,7 @@ async def run_agent_chat_turn(
             session=sqlite_session,
             tools=tools,
             model_settings=ModelSettings(tool_choice=tool_choice),
+            runtime_event_callback=lambda event: _persist_live_runtime_event(session_store, session_id, event),
         )
         assistant_text = run_result.output_text.strip()
         execution_mode = "llm" if effective_provider is not None else "deterministic"
@@ -435,11 +499,41 @@ async def run_agent_chat_turn(
         resolved_provider_id = None
         execution_note = f"agents sdk dependency missing: {error}"
     except AgentResumeError as error:
-        if error.resume_state_json is not None:
+        if not error.resumable:
+            provider_label = (
+                effective_provider.name
+                if effective_provider is not None and effective_provider.name
+                else effective_provider.id
+                if effective_provider is not None
+                else "当前模型服务"
+            )
+            assistant_text = (
+                f"{provider_label} 当前不可用，本轮已停止调用大模型。\n\n"
+                "请稍后重试，或切换到其他模型配置后继续会话。"
+            )
+            execution_mode = "deterministic"
+            resolved_provider_id = None
+            execution_note = f"LLM agent run failed: {summarize_provider_error(error)}"
+            review = _build_review_response(
+                playbook_id=playbook.metadata.id,
+                proposal=user_message,
+                assistant_text=assistant_text,
+                provider_id=resolved_provider_id,
+                evidence=playbook.evidence,
+            )
+            return AgentChatTurnResult(
+                assistant_text=assistant_text,
+                review=review,
+                execution_mode=execution_mode,
+                resolved_provider_id=resolved_provider_id,
+                execution_note=execution_note,
+                tool_events=None,
+            )
+        if error.resumable and error.resume_state_json is not None:
             session_store.save_resume_state(
                 session_id,
                 resume_state_json=error.resume_state_json,
-                resume_reason="error",
+                resume_reason="interruption",
             )
         raise
     except Exception as error:
@@ -471,6 +565,7 @@ async def run_agent_chat_turn(
         execution_mode=execution_mode,
         resolved_provider_id=resolved_provider_id,
         execution_note=execution_note,
+        tool_events=run_result.tool_events if 'run_result' in locals() else None,
     )
 
 
@@ -498,6 +593,7 @@ async def resume_agent_chat_turn(
             execution_mode="deterministic",
             resolved_provider_id=None,
             execution_note="No available model provider for resume.",
+            tool_events=None,
         )
 
     session_project_id = state.project_id or playbook.metadata.project_id
@@ -506,12 +602,16 @@ async def resume_agent_chat_turn(
         project_root_path = str(project_record.get("root_path", ""))
     except FileNotFoundError:
         project_root_path = ""
-    knowledge_base_path = str(session_store.storage.root / "playbooks" / playbook.metadata.id)
+    knowledge_base_path = _resolve_knowledge_base_path(
+        session_store=session_store,
+        session_project_id=session_project_id,
+        playbook_id=playbook.metadata.id,
+    )
     instructions = _build_agent_instructions(
         project_root_path=project_root_path,
         knowledge_base_path=knowledge_base_path,
     )
-    tools = _build_agent_tools(
+    tools = build_agent_tools(
         project_root_path=project_root_path,
         knowledge_base_path=knowledge_base_path,
     )
@@ -527,14 +627,14 @@ async def resume_agent_chat_turn(
                 tool_choice=tool_choice,
             ),
             resume_state_json,
-            context_override=None,
+            context_override=build_log_context(name="ThirdEye Review Conversation Agent", provider_config=effective_provider),
         )
     except Exception as error:
         session_store.clear_resume_state(session_id)
         raise InvalidResumeStateError("保存的断点无效或已过期，无法继续恢复，请重新发起任务。") from error
 
     try:
-        run_result = await run_text_agent(
+        run_result = await _run_text_agent_compat(
             name="ThirdEye Review Conversation Agent",
             instructions=instructions,
             user_input="",
@@ -543,6 +643,7 @@ async def resume_agent_chat_turn(
             tools=tools,
             model_settings=ModelSettings(tool_choice=tool_choice),
             resume_state=resume_state,
+            runtime_event_callback=lambda event: _persist_live_runtime_event(session_store, session_id, event),
         )
         assistant_text = run_result.output_text.strip()
         if run_result.resume_state_json is not None:
@@ -557,11 +658,37 @@ async def resume_agent_chat_turn(
         resolved_provider_id = effective_provider.id
         execution_note = "OpenAI Agents SDK session resumed from persisted RunState."
     except AgentResumeError as error:
-        if error.resume_state_json is not None:
+        if not error.resumable:
+            session_store.clear_resume_state(session_id)
+            provider_label = (
+                effective_provider.name
+                if effective_provider.name
+                else effective_provider.id
+            )
+            assistant_text = (
+                f"{provider_label} 在继续执行时返回了不可恢复错误，当前断点已清除。\n\n"
+                "请重新发送任务，或切换到其他模型配置后再试。"
+            )
+            review = _build_review_response(
+                playbook_id=playbook.metadata.id,
+                proposal="resume",
+                assistant_text=assistant_text,
+                provider_id=None,
+                evidence=playbook.evidence,
+            )
+            return AgentChatTurnResult(
+                assistant_text=assistant_text,
+                review=review,
+                execution_mode="deterministic",
+                resolved_provider_id=None,
+                execution_note=f"LLM resume failed: {summarize_provider_error(error)}",
+                tool_events=None,
+            )
+        if error.resumable and error.resume_state_json is not None:
             session_store.save_resume_state(
                 session_id,
                 resume_state_json=error.resume_state_json,
-                resume_reason="error",
+                resume_reason="interruption",
             )
         raise
 
@@ -578,4 +705,5 @@ async def resume_agent_chat_turn(
         execution_mode=execution_mode,
         resolved_provider_id=resolved_provider_id,
         execution_note=execution_note,
+        tool_events=run_result.tool_events if 'run_result' in locals() else None,
     )

@@ -17,6 +17,7 @@ type FormState = {
   api_key: string;
   base_url: string;
   api_shape: "responses" | "chat_completions";
+  timeout_seconds: number;
   tracing_enabled: boolean;
 };
 
@@ -28,6 +29,7 @@ const initialForm: FormState = {
   api_key: "",
   base_url: "",
   api_shape: "responses",
+  timeout_seconds: 150,
   tracing_enabled: true
 };
 
@@ -46,6 +48,7 @@ function buildFormFromProvider(provider: ModelProviderConfig): FormState {
     api_key: "",
     base_url: provider.base_url ?? "",
     api_shape: provider.api_shape,
+    timeout_seconds: provider.timeout_seconds ?? 150,
     tracing_enabled: provider.tracing_enabled ?? true
   };
 }
@@ -263,6 +266,18 @@ export function ModelProviderForm({ initialProviders }: ModelProviderFormProps) 
               />
             </label>
 
+            <label className="settings-field">
+              <span>Timeout (s)</span>
+              <input
+                type="number"
+                min={1}
+                max={600}
+                value={form.timeout_seconds}
+                onChange={(event) => updateField("timeout_seconds", Number(event.target.value) || 150)}
+                placeholder="150"
+              />
+            </label>
+
             <label className="settings-field settings-field--full">
               <span>API Key</span>
               <input
@@ -301,6 +316,7 @@ export function ModelProviderForm({ initialProviders }: ModelProviderFormProps) 
                         provider_type: form.provider_type,
                         model: form.model.trim(),
                         api_shape: form.api_shape,
+                        timeout_seconds: form.timeout_seconds,
                         tracing_enabled: form.tracing_enabled,
                         ...(form.api_key.trim() ? { api_key: form.api_key.trim() } : {}),
                         ...(form.base_url.trim() ? { base_url: form.base_url.trim() } : {})

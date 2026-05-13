@@ -14,8 +14,8 @@ class ModelProviderConfig(BaseModel):
     api_key: SecretStr | None = None
     base_url: str | None = None
     api_shape: ApiShape = "responses"
-    timeout_seconds: int = Field(default=60, ge=1, le=600)
-    max_retries: int = Field(default=2, ge=0, le=10)
+    timeout_seconds: int = Field(default=150, ge=1, le=600)
+    max_retries: int = Field(default=0, ge=0, le=10)
     tracing_enabled: bool = True
 
     @model_validator(mode="after")

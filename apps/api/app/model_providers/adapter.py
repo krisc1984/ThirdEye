@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.agents.sdk_runtime import run_text_agent
+from app.agents.sdk_runtime import TextAgentRunResult, run_text_agent
 from app.model_providers.llm_client import summarize_provider_error
 from app.schemas.model_provider import ModelProviderConfig, ModelProviderTestResult
 
@@ -24,6 +24,12 @@ class ProviderCapabilities:
 
 
 class ModelProviderAdapter:
+    @staticmethod
+    def _coerce_response_text(result: str | TextAgentRunResult) -> str:
+        if isinstance(result, TextAgentRunResult):
+            return result.output_text
+        return result
+
     def describe_capabilities(self, config: ModelProviderConfig) -> ProviderCapabilities:
         if config.provider_type == "openai" and config.api_shape == "responses":
             return ProviderCapabilities(
@@ -50,7 +56,7 @@ class ModelProviderAdapter:
             )
         capabilities = self.describe_capabilities(config).as_dict()
         try:
-            response_text = await run_text_agent(
+            run_result = await run_text_agent(
                 name="ThirdEye Model Connectivity Test",
                 instructions="Return a short plain-text confirmation that the model API is reachable.",
                 user_input="Reply with: connection ok",
@@ -68,6 +74,6 @@ class ModelProviderAdapter:
             provider_id=config.id,
             ok=True,
             message="Model API responded to the test payload.",
-            response_text=response_text,
+            response_text=self._coerce_response_text(run_result),
             capabilities=capabilities,
         )

@@ -4,7 +4,8 @@ const navItems = [
   { href: "/", label: "Overview" },
   { href: "/projects", label: "Projects" },
   { href: "/playbooks", label: "Playbooks" },
-  { href: "/review", label: "Review" }
+  { href: "/review", label: "Review" },
+  { href: "/settings/agents", label: "智能体中心" }
 ];
 
 export function AppNav() {

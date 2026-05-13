@@ -2,16 +2,26 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 from pathlib import Path
 from typing import Any
-
-from openai import AsyncOpenAI
 
 from app.schemas.model_provider import ModelProviderConfig
 from app.schemas.project import Project, ProjectScanSummary
 from app.services.playbook_generator import PlaybookArtifacts
 
 logger = logging.getLogger(__name__)
+MIN_PROVIDER_TIMEOUT_SECONDS = 150
+
+API_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = API_ROOT.parents[1]
+import sys
+
+VENDOR_SITE = REPO_ROOT / ".vendor" / "py312"
+if str(VENDOR_SITE) not in sys.path and VENDOR_SITE.exists():
+    sys.path.insert(0, str(VENDOR_SITE))
+
+from openai import AsyncOpenAI
 
 OSS_SKILL_ROOT = Path(r"C:\Users\xiaoxuan\.agents\skills\oss-skill")
 MAX_READ_CHARS = 12000
@@ -34,6 +44,35 @@ ALLOWED_TEXT_SUFFIXES = {
     ".ini",
     ".cfg",
 }
+
+
+def _run_preflight_command(command: str, *, cwd: Path) -> str:
+    completed = subprocess.run(
+        command,
+        shell=True,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="ignore",
+        timeout=60,
+    )
+    return (completed.stdout + completed.stderr).strip()
+
+
+def _build_preflight_context(project: Project) -> dict[str, object]:
+    root = project.root_path.resolve()
+    tree = _run_preflight_command(f'dir "{root}" /s /b', cwd=REPO_ROOT)
+    java_files = _run_preflight_command(f'dir "{root}" /s /b *.java', cwd=REPO_ROOT)
+    md_files = _run_preflight_command(f'dir "{root}" /s /b *.md', cwd=REPO_ROOT)
+    pom_files = _run_preflight_command(f'dir "{root}" /s /b pom.xml', cwd=REPO_ROOT)
+    return {
+        "target_project": str(root),
+        "top_tree_preview": tree.splitlines()[:80],
+        "java_files_preview": java_files.splitlines()[:80],
+        "markdown_files_preview": md_files.splitlines()[:40],
+        "pom_files": pom_files.splitlines()[:20],
+    }
 
 
 def _load_oss_skill_bundle() -> tuple[str, list[dict[str, object]]]:
@@ -152,7 +191,9 @@ def _build_system_prompt() -> str:
         "2. Project scan metadata.\n"
         "3. Existing evidence.\n"
         "4. Directly read project file contents selected by the backend.\n\n"
+        "5. Deterministic preflight scan results already gathered by the backend.\n\n"
         "Your task is to synthesize a project-specific reusable reviewer skill markdown file and grounded rules.\n"
+        "Do not spend turns re-exploring the repository through shell-style discovery. Treat the provided preflight results as authoritative starting context.\n"
         "Do not output progress notes, next steps, or placeholders.\n"
         "Rules must use evidence_ids from the provided evidence list.\n"
         "Return only a JSON object with keys: rules, skill_sections, execution_note.\n"
@@ -240,7 +281,7 @@ async def _request_orchestrated_distillation(
     client = AsyncOpenAI(
         api_key=provider_config.api_key.get_secret_value() if provider_config.api_key else None,
         base_url=provider_config.base_url,
-        timeout=float(provider_config.timeout_seconds),
+        timeout=float(max(provider_config.timeout_seconds, MIN_PROVIDER_TIMEOUT_SECONDS)),
         max_retries=provider_config.max_retries,
     )
     system_prompt = _build_system_prompt()
@@ -297,6 +338,7 @@ async def _request_chunk_distillation(
         "chunk_index": chunk_index,
         "chunk_count": chunk_count,
         "project": project.model_dump(mode="json"),
+        "preflight": _build_preflight_context(project),
         "scan": scan.model_dump(mode="json"),
         "baseline_rules": [rule.model_dump(mode="json") for rule in baseline.rules],
         "baseline_skill_markdown": baseline.skill_markdown,
@@ -327,6 +369,7 @@ async def _request_merge_distillation(
     payload = {
         "phase": "merge_distillation",
         "project": project.model_dump(mode="json"),
+        "preflight": _build_preflight_context(project),
         "scan": scan.model_dump(mode="json"),
         "baseline_rules": [rule.model_dump(mode="json") for rule in baseline.rules],
         "baseline_skill_markdown": baseline.skill_markdown,
@@ -352,6 +395,7 @@ async def run_agent_distillation(
     baseline: PlaybookArtifacts,
 ) -> dict[str, object]:
     oss_skill_bundle, oss_skill_files = _load_oss_skill_bundle()
+    preflight = _build_preflight_context(project)
     selected_project_files = _select_project_files(project, scan)
     project_file_payloads, files_read = _read_project_files(project, selected_project_files)
 
@@ -364,6 +408,11 @@ async def run_agent_distillation(
                 "playbook_id": baseline.metadata.id,
                 "source_root": str(OSS_SKILL_ROOT),
                 "files": oss_skill_files,
+                "preflight": {
+                    "tree_count": len(preflight["top_tree_preview"]),
+                    "java_count": len(preflight["java_files_preview"]),
+                    "md_count": len(preflight["markdown_files_preview"]),
+                },
             },
             ensure_ascii=False,
         ),
@@ -384,6 +433,7 @@ async def run_agent_distillation(
 
     payload = {
         "project": project.model_dump(mode="json"),
+        "preflight": preflight,
         "scan": scan.model_dump(mode="json"),
         "baseline_rules": [rule.model_dump(mode="json") for rule in baseline.rules],
         "baseline_skill_markdown": baseline.skill_markdown,

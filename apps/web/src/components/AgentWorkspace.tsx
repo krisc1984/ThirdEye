@@ -1,13 +1,20 @@
 "use client";
 
+import Image from "next/image";
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import type { ChangeEvent, KeyboardEvent } from "react";
+import { MarkdownMessage } from "@/components/MarkdownMessage";
 
 import type {
+  KnowledgeWorkspaceBinding,
+  KnowledgeWorkspaceListing,
   ModelProviderConfig,
   PlaybookDetail,
   PlaybookMetadata,
   Project,
   ReviewConversationSession,
+  ReviewSessionEvent,
   ReviewResponse,
   SkillListItem
 } from "@/lib/api";
@@ -16,10 +23,18 @@ import {
   createReviewSession,
   deleteProject,
   getPlaybook,
+  getKnowledgeWorkspaceBinding,
   getReviewSession,
+  getReviewSessionEventsUrl,
+  listKnowledgeWorkspaceFiles,
+  pickKnowledgeWorkspaceFolder,
   resumeReviewSession,
   sendReviewMessage,
   stopReviewSession
+  ,
+  updateKnowledgeWorkspaceSettings,
+  updateProjectKnowledgeWorkspace,
+  uploadKnowledgeWorkspaceFiles
 } from "@/lib/api";
 
 type AgentWorkspaceProps = {
@@ -27,13 +42,22 @@ type AgentWorkspaceProps = {
   modelProviders: ModelProviderConfig[];
   projects: Project[];
   skills: SkillListItem[];
+  activeAgentName?: string | null;
 };
 
 type WorkspaceMessage = {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "tool" | "llm";
   content: string;
   timestamp: string;
+  runtimeId?: string | null;
+  callStatus?: "running" | "success" | "error" | null;
+  providerId?: string | null;
+  modelName?: string | null;
+  toolName?: string | null;
+  toolCallId?: string | null;
+  toolArguments?: string | null;
+  toolResult?: string | null;
 };
 
 type KnowledgeItem = {
@@ -43,6 +67,17 @@ type KnowledgeItem = {
   size: string;
   updatedAt: string;
   folder: string;
+};
+
+type KnowledgeTreeNode = {
+  id: string;
+  name: string;
+  path: string;
+  kind: KnowledgeItem["kind"];
+  size?: string;
+  updatedAt?: string;
+  isDir: boolean;
+  children: KnowledgeTreeNode[];
 };
 
 const capabilityCards = [
@@ -110,6 +145,14 @@ const formatTime = (value: string) =>
     minute: "2-digit"
   }).format(new Date(value));
 
+const formatBytes = (value: number) => {
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  if (value >= 1024) return `${Math.round(value / 1024)} KB`;
+  return `${value} B`;
+};
+
+const formatInteger = (value: number) => new Intl.NumberFormat("en-US").format(value);
+
 const kindLabel: Record<KnowledgeItem["kind"], string> = {
   folder: "目录",
   pdf: "PDF",
@@ -168,7 +211,98 @@ function iconForKind(kind: KnowledgeItem["kind"]) {
   }
 }
 
-export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: AgentWorkspaceProps) {
+const resumeReasonLabel: Record<NonNullable<ReviewConversationSession["resume_reason"]>, string> = {
+  tool_approval: "工具执行被中断，可从断点继续",
+  runtime_error: "运行异常后已保存断点，可继续尝试",
+  cancelled_by_user: "你已终止本次执行，可从断点继续"
+};
+
+function statusIcon(status?: "running" | "success" | "error" | null) {
+  if (status === "success") return "✓";
+  if (status === "error") return "✕";
+  return "…";
+}
+
+function buildKnowledgeTree(items: KnowledgeItem[]): KnowledgeTreeNode[] {
+  const root: KnowledgeTreeNode = {
+    id: "__root__",
+    name: "root",
+    path: "",
+    kind: "folder",
+    isDir: true,
+    children: []
+  };
+  const nodeMap = new Map<string, KnowledgeTreeNode>([[root.id, root]]);
+
+  const ensureDirNode = (dirPath: string) => {
+    if (!dirPath) {
+      return root;
+    }
+    const existing = nodeMap.get(dirPath);
+    if (existing) {
+      return existing;
+    }
+    const segments = dirPath.split("/").filter(Boolean);
+    const parentPath = segments.slice(0, -1).join("/");
+    const parent = ensureDirNode(parentPath);
+    const node: KnowledgeTreeNode = {
+      id: dirPath,
+      name: segments[segments.length - 1],
+      path: dirPath,
+      kind: "folder",
+      isDir: true,
+      children: []
+    };
+    parent.children.push(node);
+    nodeMap.set(dirPath, node);
+    return node;
+  };
+
+  for (const item of items) {
+    const relativePath = item.folder === "根目录" ? item.name : `${item.folder}/${item.name}`;
+    const normalizedPath = relativePath.replace(/^\/+/, "");
+    const parentPath =
+      item.kind === "folder"
+        ? normalizedPath.split("/").slice(0, -1).join("/")
+        : normalizedPath.split("/").slice(0, -1).join("/");
+    const parent = ensureDirNode(parentPath);
+
+    if (item.kind === "folder") {
+      ensureDirNode(normalizedPath);
+      continue;
+    }
+
+    parent.children.push({
+      id: normalizedPath,
+      name: item.name,
+      path: normalizedPath,
+      kind: item.kind,
+      size: item.size,
+      updatedAt: item.updatedAt,
+      isDir: false,
+      children: []
+    });
+  }
+
+  const sortNodes = (nodes: KnowledgeTreeNode[]) => {
+    nodes.sort((a, b) => {
+      if (a.isDir !== b.isDir) {
+        return a.isDir ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name, "zh-CN");
+    });
+    for (const node of nodes) {
+      if (node.children.length) {
+        sortNodes(node.children);
+      }
+    }
+  };
+
+  sortNodes(root.children);
+  return root.children;
+}
+
+export function AgentWorkspace({ playbooks, modelProviders, projects, skills, activeAgentName }: AgentWorkspaceProps) {
   const [workspaceProjects, setWorkspaceProjects] = useState<Project[]>(
     () => projects.filter((project) => project.name !== "Sample Project")
   );
@@ -183,6 +317,13 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectPath, setNewProjectPath] = useState("");
   const [showProjectCreator, setShowProjectCreator] = useState(false);
+  const [selectedSkillName, setSelectedSkillName] = useState("");
+  const [knowledgeBinding, setKnowledgeBinding] = useState<KnowledgeWorkspaceBinding | null>(null);
+  const [knowledgeListing, setKnowledgeListing] = useState<KnowledgeWorkspaceListing | null>(null);
+  const [knowledgeQuery, setKnowledgeQuery] = useState("");
+  const [isKnowledgeLoading, setIsKnowledgeLoading] = useState(false);
+  const [knowledgeUploadInputKey, setKnowledgeUploadInputKey] = useState(0);
+  const [expandedKnowledgePaths, setExpandedKnowledgePaths] = useState<Record<string, boolean>>({});
   const [session, setSession] = useState<ReviewConversationSession | null>(null);
   const [sessionHistory, setSessionHistory] = useState<ReviewConversationSession[]>([]);
   const [playbookDetail, setPlaybookDetail] = useState<PlaybookDetail | null>(null);
@@ -191,6 +332,9 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
   const [isPending, startTransition] = useTransition();
   const requestAbortRef = useRef<AbortController | null>(null);
   const chatRef = useRef<HTMLDivElement | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const knowledgeUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const draftTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     setSelectedPlaybookId((current) => current || playbooks[0]?.id || "");
@@ -254,9 +398,24 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
       .filter((message) => message.role !== "system")
       .map((message) => ({
         id: message.id,
-        role: message.role === "assistant" ? "assistant" : "user",
+        role:
+          message.role === "assistant"
+            ? "assistant"
+            : message.role === "llm"
+              ? "llm"
+            : message.role === "tool"
+              ? "tool"
+              : "user",
         content: message.content,
-        timestamp: formatTime(message.created_at)
+        timestamp: formatTime(message.created_at),
+        runtimeId: message.runtime_id,
+        callStatus: message.call_status,
+        providerId: message.provider_id,
+        modelName: message.model_name,
+        toolName: message.tool_name,
+        toolCallId: message.tool_call_id,
+        toolArguments: message.tool_arguments,
+        toolResult: message.tool_result
       }));
   }, [session]);
 
@@ -271,7 +430,147 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
     });
   }, [mappedMessages]);
 
+  function connectSessionEvents(sessionId: string) {
+    eventSourceRef.current?.close();
+    const eventSource = new EventSource(getReviewSessionEventsUrl(sessionId));
+    eventSourceRef.current = eventSource;
+
+    const applyEvent = (parsed: ReviewSessionEvent) => {
+      setSession((current) => {
+        if (!current || current.id !== sessionId || current.id !== parsed.session_id) {
+          return current;
+        }
+
+        if (parsed.event_type === "session.snapshot") {
+          return parsed.payload as unknown as ReviewConversationSession;
+        }
+
+        const next: ReviewConversationSession = {
+          ...current,
+          messages: [...current.messages],
+        };
+        const payload = parsed.payload;
+
+        if (typeof payload.status === "string") {
+          next.status = payload.status as ReviewConversationSession["status"];
+        }
+        if ("execution_note" in payload) {
+          next.execution_note = (payload.execution_note as string | null | undefined) ?? null;
+        }
+        if ("resume_available" in payload) {
+          next.resume_available = Boolean(payload.resume_available);
+        }
+        if ("resume_reason" in payload) {
+          next.resume_reason = (payload.resume_reason as ReviewConversationSession["resume_reason"]) ?? null;
+        }
+        if ("latest_summary" in payload) {
+          next.latest_summary = (payload.latest_summary as string | null | undefined) ?? null;
+        }
+        if ("resolved_provider_id" in payload) {
+          next.resolved_provider_id = (payload.resolved_provider_id as string | null | undefined) ?? null;
+        }
+        if ("execution_mode" in payload) {
+          next.execution_mode = payload.execution_mode as ReviewConversationSession["execution_mode"];
+        }
+        if ("last_review" in payload) {
+          next.last_review = (payload.last_review as ReviewResponse | null | undefined) ?? null;
+        }
+        if (typeof payload.updated_at === "string") {
+          next.updated_at = payload.updated_at;
+        }
+
+        const eventMessage = payload.message as ReviewConversationSession["messages"][number] | undefined;
+        if (eventMessage?.id) {
+          const existingIndex = next.messages.findIndex((item) => item.id === eventMessage.id);
+          if (existingIndex >= 0) {
+            next.messages[existingIndex] = eventMessage;
+          } else {
+            next.messages.push(eventMessage);
+          }
+        }
+
+        return next;
+      });
+    };
+
+    const handleMessage = (event: MessageEvent<string>) => {
+      try {
+        applyEvent(JSON.parse(event.data) as ReviewSessionEvent);
+      } catch {
+        // Ignore malformed event payloads.
+      }
+    };
+
+    eventSource.onmessage = handleMessage;
+    for (const eventName of [
+      "session.snapshot",
+      "session.status",
+      "message.user",
+      "message.assistant",
+      "llm.start",
+      "llm.end",
+      "tool.start",
+      "tool.end",
+      "session.resume_available",
+      "session.resume_cleared",
+      "session.done",
+    ]) {
+      eventSource.addEventListener(eventName, handleMessage as EventListener);
+    }
+
+    eventSource.addEventListener("session.done", () => {
+      eventSource.close();
+      if (eventSourceRef.current === eventSource) {
+        eventSourceRef.current = null;
+      }
+    });
+
+    eventSource.onerror = () => {
+      eventSource.close();
+      if (eventSourceRef.current === eventSource) {
+        eventSourceRef.current = null;
+      }
+    };
+
+  }
+
+  useEffect(() => {
+    if (!session?.id) {
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
+      return;
+    }
+
+    connectSessionEvents(session.id);
+
+    return () => {
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
+    };
+  }, [session?.id]);
+
   const evidenceKnowledgeItems = useMemo<KnowledgeItem[]>(() => {
+    if (knowledgeListing?.items.length) {
+      return knowledgeListing.items.map((item) => ({
+        id: item.relative_path,
+        name: item.name,
+        kind: item.is_dir
+          ? "folder"
+          : item.name.endsWith(".pdf")
+            ? "pdf"
+            : item.name.endsWith(".puml") || item.name.endsWith(".uml")
+              ? "uml"
+              : item.name.endsWith(".xlsx") || item.name.endsWith(".xls") || item.name.endsWith(".csv")
+                ? "sheet"
+                : "doc",
+        size: item.is_dir ? "--" : formatBytes(item.size_bytes),
+        updatedAt: formatTime(item.updated_at),
+        folder: item.relative_path.includes("/") ? item.relative_path.split("/").slice(0, -1).join("/") : "根目录"
+      }));
+    }
+    if (knowledgeBinding?.effective_root_path) {
+      return [];
+    }
     const evidence = playbookDetail?.evidence ?? [];
     if (!evidence.length) {
       return fallbackKnowledgeItems;
@@ -285,7 +584,7 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
       updatedAt: `0${(index % 9) + 1}-1${index % 9}`,
       folder: item.source_type === "doc" ? "知识库文档" : "评审证据"
     }));
-  }, [playbookDetail]);
+  }, [knowledgeBinding?.effective_root_path, knowledgeListing, playbookDetail]);
 
   const knowledgeGroups = useMemo(() => {
     const groups = new Map<string, KnowledgeItem[]>();
@@ -297,12 +596,72 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
     return Array.from(groups.entries());
   }, [evidenceKnowledgeItems]);
 
+  const knowledgeTree = useMemo(() => buildKnowledgeTree(evidenceKnowledgeItems), [evidenceKnowledgeItems]);
+
   const reviewSummary = useMemo(() => summariseReview(session?.last_review ?? null), [session]);
 
   const selectedPlaybook = useMemo(
     () => playbooks.find((playbook) => playbook.id === selectedPlaybookId) ?? null,
     [playbooks, selectedPlaybookId]
   );
+  const selectedModelProvider = useMemo(
+    () => modelProviders.find((provider) => provider.id === selectedModelProviderId) ?? null,
+    [modelProviders, selectedModelProviderId]
+  );
+  const contextUsage = useMemo(() => {
+    if (!session?.context_usage) {
+      return null;
+    }
+    if (
+      session.resolved_provider_id &&
+      selectedModelProviderId &&
+      session.resolved_provider_id !== selectedModelProviderId
+    ) {
+      return null;
+    }
+    return session.context_usage;
+  }, [selectedModelProviderId, session]);
+
+  async function refreshKnowledgeWorkspace(projectId = selectedProjectId, query = knowledgeQuery) {
+    setIsKnowledgeLoading(true);
+    try {
+      const [binding, listing] = await Promise.all([
+        getKnowledgeWorkspaceBinding(projectId || undefined),
+        listKnowledgeWorkspaceFiles({ project_id: projectId || undefined, query })
+      ]);
+      setKnowledgeBinding(binding);
+      setKnowledgeListing(listing);
+      setExpandedKnowledgePaths((current) => {
+        if (Object.keys(current).length > 0) {
+          return current;
+        }
+        const next: Record<string, boolean> = {};
+        for (const item of listing.items) {
+          if (item.is_dir) {
+            next[item.relative_path] = item.relative_path.split("/").length <= 1;
+          }
+        }
+        return next;
+      });
+    } catch (caughtError) {
+      setKnowledgeBinding(null);
+      setKnowledgeListing(null);
+      setError(caughtError instanceof Error ? caughtError.message : "加载资料区失败");
+    } finally {
+      setIsKnowledgeLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void refreshKnowledgeWorkspace();
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void refreshKnowledgeWorkspace(selectedProjectId, knowledgeQuery);
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [knowledgeQuery]);
 
   async function ensurePlaybookDetail(playbookId: string) {
     if (playbookDetail?.metadata.id === playbookId) {
@@ -338,6 +697,12 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
       if (!session || session.playbook_id !== selectedPlaybookId) {
         setSession(targetSession);
       }
+      connectSessionEvents(targetSession.id);
+      setSession((current) =>
+        current && current.id === targetSession.id
+          ? { ...current, status: "running" }
+          : { ...targetSession, status: "running" }
+      );
       const updated = await sendReviewMessage(
         targetSession.id,
         { message: submittedMessage },
@@ -364,6 +729,8 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
     const activeSessionId = session?.id;
     requestAbortRef.current?.abort();
     requestAbortRef.current = null;
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
     if (!activeSessionId) {
       setIsSending(false);
       return;
@@ -388,6 +755,7 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
     setError(null);
     setIsSending(true);
     try {
+      connectSessionEvents(session.id);
       const updated = await resumeReviewSession(session.id);
       setSession(updated);
     } catch (caughtError) {
@@ -450,6 +818,8 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
   function handleStartNewConversation() {
     requestAbortRef.current?.abort();
     requestAbortRef.current = null;
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
     setSession(null);
     setDraft("");
     setLastSubmittedDraft("");
@@ -457,7 +827,7 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
     setIsSending(false);
   }
 
-  function handleDraftKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+  function handleDraftKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "ArrowUp") {
       return;
     }
@@ -478,14 +848,129 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
     });
   }
 
+  async function handlePickKnowledgeFolder(scope: "global" | "project") {
+    try {
+      setError(null);
+      const picked = await pickKnowledgeWorkspaceFolder();
+      if (scope === "global") {
+        await updateKnowledgeWorkspaceSettings({ root_path: picked.path });
+      } else if (selectedProjectId) {
+        await updateProjectKnowledgeWorkspace(selectedProjectId, { root_path: picked.path });
+      }
+      await refreshKnowledgeWorkspace();
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "选择资料区文件夹失败");
+    }
+  }
+
+  async function handleClearProjectKnowledgeOverride() {
+    if (!selectedProjectId) {
+      return;
+    }
+    try {
+      setError(null);
+      await updateProjectKnowledgeWorkspace(selectedProjectId, { root_path: null });
+      await refreshKnowledgeWorkspace();
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "恢复全局资料区失败");
+    }
+  }
+
+  function handleOpenKnowledgeUploadPicker() {
+    if (!knowledgeBinding?.effective_root_path) {
+      setError("请先设置资料区，再上传文档。");
+      return;
+    }
+    knowledgeUploadInputRef.current?.click();
+  }
+
+  async function handleKnowledgeUpload(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    if (!files.length) {
+      return;
+    }
+    try {
+      setError(null);
+      const result = await uploadKnowledgeWorkspaceFiles({
+        project_id: selectedProjectId || undefined,
+        files
+      });
+      setKnowledgeUploadInputKey((current) => current + 1);
+      await refreshKnowledgeWorkspace();
+      if (result.uploaded_files.length) {
+        const mentionText = result.uploaded_files.map((name) => `@资料/${name}`).join(" ");
+        setDraft((current) => (current.trim() ? `${current.trimEnd()}\n${mentionText}` : mentionText));
+        requestAnimationFrame(() => {
+          const textarea = draftTextareaRef.current;
+          if (!textarea) {
+            return;
+          }
+          textarea.focus();
+          const nextLength = textarea.value.length;
+          textarea.setSelectionRange(nextLength, nextLength);
+        });
+      }
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "上传资料失败");
+    }
+  }
+
+  function renderKnowledgeNodes(nodes: KnowledgeTreeNode[], depth = 0): React.ReactNode {
+    return nodes.map((node) => {
+      if (node.isDir) {
+        const expanded = expandedKnowledgePaths[node.path] ?? depth === 0;
+        return (
+          <div key={node.id} className="workspace-doc-node">
+            <button
+              type="button"
+              className="workspace-doc-node__dir"
+              style={{ paddingLeft: `${depth * 16}px` }}
+              onClick={() =>
+                setExpandedKnowledgePaths((current) => ({
+                  ...current,
+                  [node.path]: !expanded
+                }))
+              }
+            >
+              <span>{expanded ? "▾" : "▸"}</span>
+              <strong>{node.name}</strong>
+            </button>
+            {expanded ? <div className="workspace-doc-node__children">{renderKnowledgeNodes(node.children, depth + 1)}</div> : null}
+          </div>
+        );
+      }
+
+      return (
+        <div
+          key={node.id}
+          className="workspace-doc-item"
+          style={{ paddingLeft: `${depth * 16}px` }}
+        >
+          <span className={`workspace-doc-item__icon workspace-doc-item__icon--${node.kind}`}>
+            {iconForKind(node.kind)}
+          </span>
+          <div className="workspace-doc-item__body">
+            <strong>{node.name}</strong>
+            <small>
+              {kindLabel[node.kind]} · {node.size ?? "--"}
+            </small>
+          </div>
+          <time>{node.updatedAt ?? "--:--"}</time>
+        </div>
+      );
+    });
+  }
+
   return (
     <section className="workspace-shell">
       <aside className="workspace-sidebar">
         <div className="workspace-brand">
-          <div className="workspace-brand__mark">△</div>
+          <div className="workspace-brand__mark workspace-brand__mark--image">
+            <Image src="/miaojing.png" alt="THIRDEYE logo" width={44} height={44} className="workspace-brand__logo" />
+          </div>
           <div>
-            <strong>三眼科技</strong>
-            <span>SANYAN AI</span>
+            <strong>三眼Agent</strong>
+            <span>THIRDEYE</span>
           </div>
         </div>
 
@@ -603,7 +1088,7 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
         <header className="workspace-topbar">
           <div className="workspace-topbar__title">
             <span className="workspace-topbar__logo">◉</span>
-            <strong>三眼技术评审通用 Agent</strong>
+            <strong>{activeAgentName?.trim() || "三眼技术评审通用 Agent"}</strong>
           </div>
           <div className="workspace-topbar__actions">
             <button type="button">智能体中心</button>
@@ -656,16 +1141,47 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
             <article
               key={message.id}
               className={`workspace-message ${
-                message.role === "assistant" ? "workspace-message--assistant" : "workspace-message--user"
+                message.role === "assistant"
+                  ? "workspace-message--assistant"
+                  : message.role === "tool" || message.role === "llm"
+                    ? "workspace-message--tool"
+                    : "workspace-message--user"
               }`}
             >
-              <div className="workspace-avatar">{message.role === "assistant" ? "◉" : "你"}</div>
+              <div className="workspace-avatar">
+                {message.role === "assistant" ? "◉" : message.role === "llm" ? "◎" : message.role === "tool" ? "⚙" : "你"}
+              </div>
               <div className="workspace-message__body">
                 <div className="workspace-message__meta">
-                  <strong>{message.role === "assistant" ? "三眼 Agent" : "你"}</strong>
+                  <strong>
+                    {message.role === "assistant"
+                      ? "三眼 Agent"
+                      : message.role === "llm"
+                        ? `模型 · ${message.providerId ?? "provider"} / ${message.modelName ?? "model"}`
+                      : message.role === "tool"
+                        ? `工具 · ${message.toolName ?? "未知工具"}`
+                        : "你"}
+                  </strong>
                   <span>{message.timestamp}</span>
                 </div>
-                <p>{message.content}</p>
+                {message.role === "tool" || message.role === "llm" ? (
+                  <div className="workspace-tool-call">
+                    <p>{statusIcon(message.callStatus)} {message.content}</p>
+                    {message.role === "llm" && message.toolResult ? (
+                      <MarkdownMessage content={message.toolResult} />
+                    ) : null}
+                    <details className="workspace-tool-call__details">
+                      <summary>调用参数</summary>
+                      <pre>{message.toolArguments || "(无参数)"}</pre>
+                    </details>
+                    <details className="workspace-tool-call__details">
+                      <summary>执行结果</summary>
+                      <pre>{message.toolResult || "(无结果)"}</pre>
+                    </details>
+                  </div>
+                ) : (
+                  <MarkdownMessage content={message.content} />
+                )}
               </div>
             </article>
           ))}
@@ -674,7 +1190,7 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
         {error ? <p className="workspace-status workspace-status--error">{error}</p> : null}
         {session?.resume_available && !isSending ? (
           <p className="workspace-status">
-            当前会话存在可恢复断点（{session.resume_reason ?? "unknown"}）。
+            当前会话存在可恢复断点（{session.resume_reason ? resumeReasonLabel[session.resume_reason] : "可继续执行"}）。
             <button type="button" onClick={() => void handleResumeSession()}>
               继续执行
             </button>
@@ -682,27 +1198,8 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
         ) : null}
 
         <div className="workspace-composer">
-          <div className="workspace-skill-hints">
-            <span>技能清单</span>
-            <div className="workspace-skill-hints__list">
-              {skills.map((skill) => (
-                <button
-                  key={skill.name}
-                  type="button"
-                  onClick={() =>
-                    setDraft((current) =>
-                      current.trim()
-                        ? `${current}\n使用技能：${skill.name}`
-                        : `使用技能：${skill.name}\n${skill.description}`
-                    )
-                  }
-                >
-                  {skill.name}
-                </button>
-              ))}
-            </div>
-          </div>
           <textarea
+            ref={draftTextareaRef}
             rows={4}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
@@ -711,19 +1208,96 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
           />
           <div className="workspace-composer__footer">
             <div className="workspace-composer__actions">
-              <button type="button">上传文档</button>
+              <button type="button" onClick={handleOpenKnowledgeUploadPicker}>
+                上传文档
+              </button>
               <button type="button">扫描风险</button>
               <button type="button">生成结论</button>
             </div>
             <div className="workspace-composer__submit">
               <label className="workspace-composer__control">
-                <span>模式</span>
-                <select value={mode} onChange={(event) => setMode(event.target.value as typeof mode)}>
-                  <option value="quick">quick</option>
-                  <option value="standard">standard</option>
-                  <option value="strict">strict</option>
+                <span>技能</span>
+                <select
+                  value={selectedSkillName}
+                  onChange={(event) => {
+                    const nextSkillName = event.target.value;
+                    setSelectedSkillName(nextSkillName);
+                    if (!nextSkillName) {
+                      return;
+                    }
+                    const selectedSkill = skills.find((skill) => skill.name === nextSkillName);
+                    setDraft((current) =>
+                      current.trim()
+                        ? `${current}\n使用技能：${nextSkillName}`
+                        : `使用技能：${nextSkillName}${selectedSkill?.description ? `\n${selectedSkill.description}` : ""}`
+                    );
+                  }}
+                >
+                  <option value="">不指定技能</option>
+                  {skills.map((skill) => (
+                    <option key={skill.name} value={skill.name}>
+                      {skill.name}
+                    </option>
+                  ))}
                 </select>
               </label>
+              <div
+                className={`workspace-context-meter ${contextUsage ? "" : "workspace-context-meter--idle"}`}
+                tabIndex={0}
+              >
+                <div
+                  className="workspace-context-meter__ring"
+                  style={{
+                    background: `conic-gradient(var(--blue) ${contextUsage?.usage_percent ?? 0}%, rgba(203, 213, 225, 0.72) 0)`
+                  }}
+                >
+                  <div className="workspace-context-meter__core">
+                    <span>{contextUsage?.usage_percent ?? 0}%</span>
+                  </div>
+                </div>
+                <div className="workspace-context-meter__popover">
+                  <div className="workspace-context-meter__popover-head">
+                    <div>
+                      <strong>上下文</strong>
+                      <span>{contextUsage?.provider_name ?? selectedModelProvider?.name ?? "未选择模型"}</span>
+                    </div>
+                    <strong>{contextUsage?.usage_percent ?? 0}%</strong>
+                  </div>
+                  <div className="workspace-context-meter__stats">
+                    <div>
+                      <span>已使用</span>
+                      <strong>{formatInteger(contextUsage?.used_tokens ?? 0)}</strong>
+                    </div>
+                    <div>
+                      <span>剩余</span>
+                      <strong>{formatInteger(contextUsage?.remaining_tokens ?? 0)}</strong>
+                    </div>
+                    <div>
+                      <span>窗口</span>
+                      <strong>{formatInteger(contextUsage?.context_window ?? 0)}</strong>
+                    </div>
+                  </div>
+                  <div className="workspace-context-meter__breakdown">
+                    <div>
+                      <span>Messages</span>
+                      <strong>{formatInteger(contextUsage?.breakdown.messages_tokens ?? 0)}</strong>
+                    </div>
+                    <div>
+                      <span>System prompt</span>
+                      <strong>{formatInteger(contextUsage?.breakdown.system_prompt_tokens ?? 0)}</strong>
+                    </div>
+                    <div>
+                      <span>Playbook</span>
+                      <strong>{formatInteger(contextUsage?.breakdown.playbook_tokens ?? 0)}</strong>
+                    </div>
+                  </div>
+                  <p className="workspace-context-meter__hint">
+                    {contextUsage
+                      ? `估算值，更新于 ${formatTime(contextUsage.updated_at)}`
+                      : "开始会话后显示当前上下文估算占用"}
+                  </p>
+                </div>
+              </div>
               <label className="workspace-composer__control">
                 <span>模型</span>
                 <select
@@ -765,55 +1339,67 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
           <div className="workspace-panel__header">
             <div>
               <strong>资料区</strong>
-              <span>
-                {selectedPlaybook?.name ?? "未选择技能包"} · {selectedProject?.name ?? "未选择项目"}
-              </span>
+              <span>{knowledgeBinding?.effective_root_path ?? "未设置资料区"}</span>
             </div>
             <button type="button">⋯</button>
+          </div>
+
+          <div className="workspace-knowledge-actions">
+            <button type="button" onClick={() => void handlePickKnowledgeFolder("global")}>
+              设置全局资料区
+            </button>
+            <button type="button" disabled={!selectedProjectId} onClick={() => void handlePickKnowledgeFolder("project")}>
+              切换当前项目资料区
+            </button>
+            <button
+              type="button"
+              disabled={!selectedProjectId || knowledgeBinding?.scope !== "project"}
+              onClick={() => void handleClearProjectKnowledgeOverride()}
+            >
+              恢复全局资料区
+            </button>
           </div>
 
           <div className="workspace-doc-tabs">
             <button type="button" className="workspace-doc-tabs__active">
               全部
             </button>
-            <button type="button">文档 {knowledgeGroups.reduce((acc, [, items]) => acc + items.length, 0)}</button>
-            <button type="button">图表 {playbookDetail?.rules.length ?? 0}</button>
-            <button type="button">附件 {playbookDetail?.evidence.length ?? fallbackKnowledgeItems.length}</button>
+            <button type="button">文件 {knowledgeListing?.total_items ?? knowledgeGroups.reduce((acc, [, items]) => acc + items.length, 0)}</button>
+            <button type="button">作用域 {knowledgeBinding?.scope === "project" ? "项目" : knowledgeBinding?.scope === "global" ? "全局" : "未配置"}</button>
+            <button type="button">{knowledgeBinding?.exists ? "已连接" : "未连接"}</button>
           </div>
 
           <div className="workspace-doc-search">
-            <input placeholder="搜索资料" value="" readOnly />
+            <input
+              placeholder="搜索资料"
+              value={knowledgeQuery}
+              onChange={(event) => setKnowledgeQuery(event.target.value)}
+            />
             <button type="button">☰</button>
           </div>
 
           <div className="workspace-doc-tree">
-            {knowledgeGroups.map(([group, items]) => (
-              <div key={group} className="workspace-doc-group">
-                <div className="workspace-doc-group__title">
-                  <span>▾</span>
-                  <strong>{group}</strong>
-                </div>
-                {items.map((item) => (
-                  <div key={item.id} className="workspace-doc-item">
-                    <span className={`workspace-doc-item__icon workspace-doc-item__icon--${item.kind}`}>
-                      {iconForKind(item.kind)}
-                    </span>
-                    <div className="workspace-doc-item__body">
-                      <strong>{item.name}</strong>
-                      <small>
-                        {kindLabel[item.kind]} · {item.size}
-                      </small>
-                    </div>
-                    <time>{item.updatedAt}</time>
-                  </div>
-                ))}
-              </div>
-            ))}
+            {isKnowledgeLoading ? <p className="workspace-empty">资料区加载中...</p> : null}
+            {!isKnowledgeLoading && !knowledgeBinding?.effective_root_path ? (
+              <p className="workspace-empty">还没有配置资料区。先设置全局资料区，或为当前项目单独切换文件夹。</p>
+            ) : null}
+            {!isKnowledgeLoading && knowledgeBinding?.effective_root_path && !knowledgeGroups.length ? (
+              <p className="workspace-empty">当前资料区没有匹配文件。</p>
+            ) : null}
+            {renderKnowledgeNodes(knowledgeTree)}
           </div>
 
-          <button type="button" className="workspace-upload">
+          <label className="workspace-upload">
             ＋ 上传资料
-          </button>
+            <input
+              ref={knowledgeUploadInputRef}
+              key={knowledgeUploadInputKey}
+              type="file"
+              multiple
+              hidden
+              onChange={(event) => void handleKnowledgeUpload(event)}
+            />
+          </label>
         </section>
 
         <section className="workspace-panel workspace-panel--summary">
@@ -846,7 +1432,18 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
 
           <div className="workspace-summary__footer">
             <span>更新于 {session ? formatTime(session.updated_at) : "--:--"}</span>
-            <button type="button">待确认</button>
+            {session && selectedPlaybookId ? (
+              <Link
+                href={`/review/report?session_id=${encodeURIComponent(session.id)}&playbook_id=${encodeURIComponent(selectedPlaybookId)}`}
+                className="workspace-summary__link"
+              >
+                待确认
+              </Link>
+            ) : (
+              <button type="button" disabled>
+                待确认
+              </button>
+            )}
           </div>
         </section>
 
@@ -867,6 +1464,7 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills }: 
                   onClick={() => {
                     startTransition(async () => {
                       const loaded = await getReviewSession(item.id);
+                      connectSessionEvents(item.id);
                       setSession(loaded);
                     });
                   }}

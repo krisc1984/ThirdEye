@@ -12,10 +12,12 @@ def test_project_slug_normalization():
         id="proj_1",
         name="ThirdEye",
         root_path="F:/codebaby/ThirdEye",
+        knowledge_root_path="F:/knowledge",
         slug="Third Eye MVP!",
     )
 
     assert project.slug == "third-eye-mvp"
+    assert str(project.knowledge_root_path) == "F:\\knowledge"
 
 
 def test_playbook_version_requires_semver():
@@ -92,4 +94,3 @@ def test_openai_compatible_requires_base_url_and_chat_completions():
     )
 
     assert provider.base_url == "https://example.com/v1"
-

@@ -14,6 +14,7 @@ class Project(BaseModel):
     id: str
     name: str
     root_path: Path
+    knowledge_root_path: Path | None = None
     slug: str
     languages: list[str] = Field(default_factory=list)
     frameworks: list[str] = Field(default_factory=list)
@@ -36,4 +37,3 @@ class ProjectScanSummary(BaseModel):
     config_files: list[str] = Field(default_factory=list)
     entrypoint_candidates: list[str] = Field(default_factory=list)
     sensitive_warnings: list[str] = Field(default_factory=list)
-

@@ -4,6 +4,9 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
+from app.core.config import settings
+from app.services.skill_registry import SkillRegistryService
+from app.services.storage import JsonStorage
 from scripts.skill_agent import SkillLoader
 
 router = APIRouter(prefix="/skills", tags=["skills"])
@@ -13,7 +16,8 @@ SKILLS_ROOT = API_ROOT / "skills"
 
 @router.get("")
 def list_skills() -> list[dict[str, str]]:
-    loader = SkillLoader(SKILLS_ROOT)
+    service = SkillRegistryService(JsonStorage(settings.data_dir), SKILLS_ROOT)
+    loader = service.enabled_skill_loader()
     skills: list[dict[str, str]] = []
     for name in loader.list_skills():
         meta = loader.skills.get(name, {}).get("meta", {})

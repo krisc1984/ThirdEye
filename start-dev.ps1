@@ -11,6 +11,9 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $apiDir = Join-Path $root "apps\api"
 $webDir = Join-Path $root "apps\web"
 $apiBaseUrl = "http://${ApiHost}:${ApiPort}"
+$logDir = Join-Path $root "data\logs"
+$apiLog = Join-Path $logDir "api.log"
+$accessLog = Join-Path $logDir "access.log"
 
 function Assert-Command {
     param([string]$Name)
@@ -44,10 +47,13 @@ else {
 }
 
 $webCommand = "Set-Location '$webDir'; `$env:NEXT_PUBLIC_API_BASE_URL='$apiBaseUrl'; npm run dev -- --hostname $WebHost --port $WebPort"
+$logCommand = "New-Item -ItemType Directory -Force -Path '$logDir' | Out-Null; New-Item -ItemType File -Force -Path '$apiLog' | Out-Null; New-Item -ItemType File -Force -Path '$accessLog' | Out-Null; Get-Content '$apiLog', '$accessLog' -Wait"
 
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $apiCommand
 Start-Sleep -Seconds 1
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $webCommand
+Start-Process powershell -ArgumentList "-NoExit", "-Command", $logCommand
 
 Write-Host "Started API at $apiBaseUrl" -ForegroundColor Green
 Write-Host "Started Web at http://${WebHost}:${WebPort}" -ForegroundColor Green
+Write-Host "Streaming logs from $apiLog and $accessLog" -ForegroundColor Green
