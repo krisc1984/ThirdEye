@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from app.schemas.review import ReviewChatMessage, ReviewConversationSession, ReviewResponse
 from app.services.review_session_events import review_session_events
+from app.services.review_session_observability import ReviewSessionObservabilityService
 from app.services.storage import JsonStorage
 
 
@@ -20,14 +21,17 @@ class ReviewSessionState:
 class ReviewSessionStore:
     def __init__(self, storage: JsonStorage, data_root: Path) -> None:
         self.storage = storage
+        self.data_root = data_root
         self.sqlite_db_path = data_root / "review_sessions" / "agent_memory.sqlite3"
         self.sqlite_db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.observability = ReviewSessionObservabilityService(data_root)
 
     def create(
         self,
         *,
         playbook_id: str,
         project_id: str | None,
+        agent_id: str | None = None,
         mode: str,
         model_provider_id: str | None,
         opening_message: str | None = None,
@@ -48,6 +52,7 @@ class ReviewSessionStore:
             id=session_id,
             playbook_id=playbook_id,
             project_id=project_id,
+            agent_id=agent_id,
             mode=mode,  # type: ignore[arg-type]
             status="idle",
             execution_mode="llm" if model_provider_id else "deterministic",
@@ -57,6 +62,18 @@ class ReviewSessionStore:
             updated_at=now,
         )
         self._save(session)
+        self.observability.append_event(
+            session_id,
+            event_type="session_started",
+            payload={
+                "playbook_id": playbook_id,
+                "project_id": project_id,
+                "agent_id": agent_id,
+                "mode": mode,
+                "execution_mode": session.execution_mode,
+                "resolved_provider_id": model_provider_id,
+            },
+        )
         return ReviewSessionState(session=session, sqlite_session=self.open_sqlite_session(session_id))
 
     def load(self, session_id: str) -> ReviewSessionState:
@@ -96,6 +113,18 @@ class ReviewSessionStore:
         state.messages.append(message)
         state.updated_at = datetime.utcnow()
         self._save(state)
+        if role == "user":
+            self.observability.append_event(
+                session_id,
+                event_type="user_message",
+                payload={"message_id": message.id, "content": content},
+            )
+        elif role == "assistant":
+            self.observability.append_event(
+                session_id,
+                event_type="assistant_message",
+                payload={"message_id": message.id, "content": content},
+            )
         review_session_events.publish(
             session_id,
             f"message.{role}",
@@ -320,6 +349,15 @@ class ReviewSessionStore:
         state.resume_reason = None
         state.updated_at = datetime.utcnow()
         self._save(state)
+        self.observability.append_event(
+            session_id,
+            event_type="session_completed",
+            payload={
+                "latest_summary": summary,
+                "execution_mode": execution_mode,
+                "resolved_provider_id": resolved_provider_id,
+            },
+        )
         review_session_events.publish(
             session_id,
             "session.done",
@@ -351,6 +389,11 @@ class ReviewSessionStore:
             state.execution_note = execution_note
         state.updated_at = datetime.utcnow()
         self._save(state)
+        self.observability.append_event(
+            session_id,
+            event_type="session_status_changed",
+            payload={"status": state.status, "execution_note": state.execution_note},
+        )
         review_session_events.publish(
             session_id,
             "session.status",

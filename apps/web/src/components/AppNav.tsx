@@ -4,7 +4,10 @@ const navItems = [
   { href: "/", label: "Overview" },
   { href: "/projects", label: "Projects" },
   { href: "/playbooks", label: "Playbooks" },
+  { href: "/graph", label: "Graph" },
   { href: "/review", label: "Review" },
+  { href: "/review/code", label: "Code Review" },
+  { href: "/observability", label: "Observability" },
   { href: "/settings/agents", label: "智能体中心" }
 ];
 

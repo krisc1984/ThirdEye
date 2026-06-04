@@ -14,6 +14,7 @@ from app.schemas.knowledge_workspace import (
     KnowledgeWorkspaceSettings,
     KnowledgeWorkspaceUploadResult,
 )
+from app.services.docx_document import extract_docx_text, write_docx, write_docx_preserving_package
 from app.schemas.project import Project
 from app.services.storage import JsonStorage, StorageError
 
@@ -24,6 +25,7 @@ MAX_LIST_ITEMS = 500
 MAX_UPLOAD_FILE_BYTES = 25 * 1024 * 1024
 MAX_TEXT_FILE_BYTES = 512 * 1024
 TEXT_FILE_EXTENSIONS = {".md", ".markdown", ".txt"}
+DOCX_FILE_EXTENSIONS = {".docx"}
 
 
 class KnowledgeWorkspaceService:
@@ -159,6 +161,43 @@ class KnowledgeWorkspaceService:
         target_path.write_text(content, encoding="utf-8")
         return KnowledgeWorkspaceUploadResult(root_path=root_path, uploaded_files=[normalized_name])
 
+    def save_docx_file(
+        self,
+        *,
+        project_id: str | None,
+        filename: str,
+        content: str,
+        source_relative_path: str | None = None,
+    ) -> KnowledgeWorkspaceUploadResult:
+        binding = self._resolve_binding(project_id)
+        root_path = binding.effective_root_path
+        if root_path is None:
+            raise HTTPException(status_code=400, detail="knowledge workspace path is not configured")
+        if not root_path.exists() or not root_path.is_dir():
+            raise HTTPException(status_code=400, detail="knowledge workspace path does not exist or is not a directory")
+
+        normalized_name = Path(filename).name.strip()
+        if not normalized_name:
+            raise HTTPException(status_code=400, detail="invalid filename")
+        if not normalized_name.lower().endswith(".docx"):
+            raise HTTPException(status_code=400, detail="only docx files are supported")
+        encoded = content.encode("utf-8")
+        if len(encoded) > MAX_TEXT_FILE_BYTES:
+            raise HTTPException(status_code=400, detail="docx content too large")
+
+        target_path = (root_path / normalized_name).resolve()
+        if target_path.parent != root_path.resolve():
+            raise HTTPException(status_code=400, detail="invalid filename")
+        source_path = None
+        if source_relative_path:
+            source_path = self._resolve_docx_path(root_path, source_relative_path)
+
+        if source_path is not None:
+            write_docx_preserving_package(source_path, target_path, content)
+        else:
+            write_docx(target_path, content)
+        return KnowledgeWorkspaceUploadResult(root_path=root_path, uploaded_files=[normalized_name])
+
     def read_text_file(self, *, project_id: str | None, relative_path: str) -> KnowledgeWorkspaceFileContent:
         binding = self._resolve_binding(project_id)
         root_path = binding.effective_root_path
@@ -190,6 +229,39 @@ class KnowledgeWorkspaceService:
             relative_path=normalized_relative,
             content=content,
             truncated=truncated,
+            content_type="text",
+        )
+
+    def read_docx_file(self, *, project_id: str | None, relative_path: str) -> KnowledgeWorkspaceFileContent:
+        binding = self._resolve_binding(project_id)
+        root_path = binding.effective_root_path
+        if root_path is None:
+            raise HTTPException(status_code=400, detail="knowledge workspace path is not configured")
+        if not root_path.exists() or not root_path.is_dir():
+            raise HTTPException(status_code=400, detail="knowledge workspace path does not exist or is not a directory")
+
+        normalized_relative = relative_path.strip().replace("\\", "/").lstrip("/")
+        if not normalized_relative:
+            raise HTTPException(status_code=400, detail="relative_path is required")
+
+        root_resolved = root_path.resolve()
+        target_path = (root_resolved / normalized_relative).resolve()
+        try:
+            target_path.relative_to(root_resolved)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="invalid relative_path") from error
+        if not target_path.exists() or not target_path.is_file():
+            raise HTTPException(status_code=404, detail="knowledge workspace file not found")
+        if target_path.suffix.lower() not in DOCX_FILE_EXTENSIONS:
+            raise HTTPException(status_code=400, detail="only docx files are supported")
+
+        content, truncated = extract_docx_text(target_path)
+        return KnowledgeWorkspaceFileContent(
+            root_path=root_resolved,
+            relative_path=normalized_relative,
+            content=content,
+            truncated=truncated,
+            content_type="docx",
         )
 
     def pick_folder(self) -> Path:
@@ -234,3 +306,20 @@ class KnowledgeWorkspaceService:
         if not normalized.is_dir():
             raise HTTPException(status_code=400, detail="knowledge workspace path must be a directory")
         return normalized
+
+    def _resolve_docx_path(self, root_path: Path, relative_path: str) -> Path:
+        normalized_relative = relative_path.strip().replace("\\", "/").lstrip("/")
+        if not normalized_relative:
+            raise HTTPException(status_code=400, detail="source_relative_path is required")
+
+        root_resolved = root_path.resolve()
+        source_path = (root_resolved / normalized_relative).resolve()
+        try:
+            source_path.relative_to(root_resolved)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="invalid source_relative_path") from error
+        if not source_path.exists() or not source_path.is_file():
+            raise HTTPException(status_code=404, detail="source docx file not found")
+        if source_path.suffix.lower() not in DOCX_FILE_EXTENSIONS:
+            raise HTTPException(status_code=400, detail="only docx source files are supported")
+        return source_path

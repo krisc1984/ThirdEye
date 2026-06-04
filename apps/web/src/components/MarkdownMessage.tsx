@@ -11,7 +11,22 @@ type Block =
   | { type: "paragraph"; text: string }
   | { type: "list"; ordered: boolean; items: string[] }
   | { type: "blockquote"; lines: string[] }
-  | { type: "code"; code: string };
+  | { type: "code"; code: string }
+  | { type: "table"; header: string[]; rows: string[][] };
+
+function splitTableRow(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function isTableDivider(line: string): boolean {
+  const cells = splitTableRow(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
 
 function escapeHtml(value: string) {
   return value
@@ -66,6 +81,27 @@ function parseBlocks(content: string): Block[] {
     if (heading) {
       blocks.push({ type: "heading", level: heading[1].length, text: heading[2] });
       i += 1;
+      continue;
+    }
+
+    if (
+      trimmed.includes("|") &&
+      i + 1 < lines.length &&
+      lines[i + 1] &&
+      isTableDivider(lines[i + 1].trim())
+    ) {
+      const header = splitTableRow(trimmed);
+      const rows: string[][] = [];
+      i += 2;
+      while (i < lines.length) {
+        const current = lines[i].trim();
+        if (!current || !current.includes("|")) {
+          break;
+        }
+        rows.push(splitTableRow(current));
+        i += 1;
+      }
+      blocks.push({ type: "table", header, rows });
       continue;
     }
 
@@ -169,6 +205,34 @@ export function MarkdownMessage({ content }: Props) {
             <pre key={key}>
               <code>{block.code}</code>
             </pre>
+          );
+        }
+        if (block.type === "table") {
+          return (
+            <div key={key} className="workspace-markdown__table-wrap">
+              <table className="workspace-markdown__table">
+                <thead>
+                  <tr>
+                    {block.header.map((cell, cellIndex) => (
+                      <th key={`${key}-head-${cellIndex}`}>
+                        <HtmlSpan html={renderInline(cell)} />
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {block.rows.map((row, rowIndex) => (
+                    <tr key={`${key}-row-${rowIndex}`}>
+                      {row.map((cell, cellIndex) => (
+                        <td key={`${key}-row-${rowIndex}-cell-${cellIndex}`}>
+                          <HtmlSpan html={renderInline(cell)} />
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           );
         }
         const ListTag = block.ordered ? "ol" : "ul";

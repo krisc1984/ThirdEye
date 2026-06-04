@@ -1,0 +1,15 @@
+{
+  "action": "summarize_page_changes",
+  "description": "Summarize deterministic homepage changes for tests and local demos.",
+  "enabled": true,
+  "id": "cap_summarize_page_changes",
+  "input_schema": {},
+  "kind": "tool",
+  "name": "Summarize Page Changes",
+  "output_schema": {},
+  "retry_policy": {
+    "backoff_seconds": 0.0,
+    "max_attempts": 1,
+    "retry_on": []
+  }
+}

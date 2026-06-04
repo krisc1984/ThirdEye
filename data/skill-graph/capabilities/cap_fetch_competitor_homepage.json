@@ -1,0 +1,15 @@
+{
+  "action": "fetch_competitor_homepage",
+  "description": "Fetch a deterministic competitor homepage snapshot for tests and local demos.",
+  "enabled": true,
+  "id": "cap_fetch_competitor_homepage",
+  "input_schema": {},
+  "kind": "tool",
+  "name": "Fetch Competitor Homepage",
+  "output_schema": {},
+  "retry_policy": {
+    "backoff_seconds": 0.0,
+    "max_attempts": 1,
+    "retry_on": []
+  }
+}

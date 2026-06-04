@@ -1,11 +1,12 @@
 import Link from "next/link";
 
 type SettingsSectionTabsProps = {
-  active: "agents" | "models" | "skills";
+  active: "agents" | "models" | "skills" | "mcp";
 };
 
 const tabs = [
   { id: "agents", href: "/settings/agents", label: "智能体中心" },
+  { id: "mcp", href: "/settings/mcp", label: "MCP 管理" },
   { id: "skills", href: "/settings/skills", label: "技能管理" },
   { id: "models", href: "/settings/models", label: "模型设置" }
 ] as const;

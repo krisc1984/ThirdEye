@@ -1,6 +1,7 @@
 import contextlib
 import json
 import importlib
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -57,6 +58,42 @@ def _seed_default_provider(client: TestClient) -> None:
             "api_key": "secret",
         },
     )
+
+
+def _run_git(root: Path, *args: str) -> None:
+    completed = subprocess.run(
+        ["git", "-C", str(root), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+
+
+def _seed_git_project(client: TestClient, tmp_path: Path) -> dict:
+    project_root = tmp_path / "git_project"
+    project_root.mkdir()
+    _run_git(project_root, "init")
+    _run_git(project_root, "config", "user.email", "review@example.test")
+    _run_git(project_root, "config", "user.name", "Review Bot")
+    _run_git(project_root, "branch", "-M", "main")
+    (project_root / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+    (project_root / "app.py").write_text("print('main')\n", encoding="utf-8")
+    (project_root / "ignored.txt").write_text("ignored\n", encoding="utf-8")
+    _run_git(project_root, "add", ".")
+    _run_git(project_root, "commit", "-m", "initial")
+    _run_git(project_root, "checkout", "-b", "feature/review-ui")
+    (project_root / "app.py").write_text("print('feature')\n", encoding="utf-8")
+    (project_root / "src").mkdir()
+    (project_root / "src" / "review.ts").write_text("export const review = true;\n", encoding="utf-8")
+    _run_git(project_root, "add", ".")
+    _run_git(project_root, "commit", "-m", "feature change")
+    return client.post(
+        "/projects",
+        json={"root_path": str(project_root), "extra_ignore_patterns": [], "name": "Git Review Project"},
+    ).json()
 
 
 def test_create_and_get_review():
@@ -135,6 +172,132 @@ def test_create_review_falls_back_when_provider_call_fails(monkeypatch):
     assert "fell back" in body["execution_note"]
 
 
+def test_create_code_review_from_changed_files():
+    client = TestClient(app)
+    playbook_id = _seed_playbook(client)
+
+    response = client.post(
+        "/reviews/code",
+        json={
+            "playbook_id": playbook_id,
+            "mode": "strict",
+            "changed_files": [
+                {
+                    "path": "src/review.ts",
+                    "status": "modified",
+                    "additions": 2,
+                    "deletions": 0,
+                    "patch": "\n".join(
+                        [
+                            "diff --git a/src/review.ts b/src/review.ts",
+                            "@@ -1,2 +1,4 @@",
+                            " export function render(input: string) {",
+                            "+  eval(input)",
+                            "+  return input as any",
+                            " }",
+                        ]
+                    ),
+                    "language": "typescript",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_files"] == 1
+    assert body["review"]["playbook_id"] == playbook_id
+    assert body["review"]["overall_judgement"] in {"不建议采用", "建议修改后再评审"}
+    categories = {item["category"] for item in body["file_findings"]}
+    assert "security" in categories
+    assert "testing" in categories
+    assert "代码评审结果" in body["summary_markdown"]
+
+    fetched = client.get(f"/reviews/{body['review']['id']}")
+    assert fetched.status_code == 200
+
+
+def test_create_code_review_from_inline_diff():
+    client = TestClient(app)
+    playbook_id = _seed_playbook(client)
+
+    diff_text = "\n".join(
+        [
+            "diff --git a/src/service.ts b/src/service.ts",
+            "index 1111111..2222222 100644",
+            "--- a/src/service.ts",
+            "+++ b/src/service.ts",
+            "@@ -1,2 +1,3 @@",
+            " export function createReview() {",
+            "+  console.log('debug')",
+            " }",
+        ]
+    )
+    response = client.post(
+        "/reviews/code",
+        json={
+            "playbook_id": playbook_id,
+            "diff_text": diff_text,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["changed_files"][0]["path"] == "src/service.ts"
+    assert body["changed_files"][0]["additions"] == 1
+    assert any(item["category"] == "observability" for item in body["file_findings"])
+
+
+def test_code_review_lists_project_branches(tmp_path: Path):
+    client = TestClient(app)
+    project = _seed_git_project(client, tmp_path)
+
+    response = client.post("/reviews/code/branches", json={"project_id": project["id"]})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["current_branch"] == "feature/review-ui"
+    assert {"main", "feature/review-ui"}.issubset(set(body["branches"]))
+
+
+def test_code_review_lists_project_files(tmp_path: Path):
+    client = TestClient(app)
+    project = _seed_git_project(client, tmp_path)
+
+    response = client.post("/reviews/code/files", json={"project_id": project["id"], "limit": 20})
+
+    assert response.status_code == 200
+    body = response.json()
+    paths = {item["path"] for item in body["files"]}
+    assert "app.py" in paths
+    assert "src/review.ts" in paths
+    assert "ignored.txt" not in paths
+    assert body["total_files"] >= 2
+
+
+def test_code_review_gets_single_file_diff_and_content(tmp_path: Path):
+    client = TestClient(app)
+    project = _seed_git_project(client, tmp_path)
+
+    response = client.post(
+        "/reviews/code/file-diff",
+        json={
+            "project_id": project["id"],
+            "path": "app.py",
+            "base_ref": "main",
+            "head_ref": "feature/review-ui",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["path"] == "app.py"
+    assert body["additions"] == 1
+    assert body["deletions"] == 1
+    assert "+print('feature')" in body["patch"]
+    assert "print('feature')" in body["content"]
+
+
 def test_review_session_message_uses_skill_agent(monkeypatch):
     client = TestClient(app)
     playbook_id = _seed_playbook(client)
@@ -182,6 +345,7 @@ def test_review_session_message_uses_skill_agent(monkeypatch):
             "replace_in_file",
             "load_skill",
             "list_skills",
+            "tavily_web_search",
         }
         assert session is not None
         assert model_settings.tool_choice == "auto"
@@ -221,6 +385,55 @@ def test_review_session_message_uses_skill_agent(monkeypatch):
     assert body["latest_summary"] == "这是 skill agent 的回复"
     assert body["messages"][-1]["role"] == "assistant"
     assert body["messages"][-1]["content"] == "这是 skill agent 的回复"
+
+
+def test_review_session_can_bind_code_review_agent(monkeypatch):
+    client = TestClient(app)
+    playbook_id = _seed_playbook(client)
+    selected_project = _seed_project(client, "Code Review Agent Space")
+    _seed_default_provider(client)
+
+    client.post("/agent-configs/test-review-agent/activate", json={"id": "test-review-agent"})
+
+    session = client.post(
+        "/reviews/sessions",
+        json={
+            "playbook_id": playbook_id,
+            "project_id": selected_project["id"],
+            "agent_id": "code-review-agent",
+            "mode": "strict",
+            "model_provider_id": "xunfei",
+        },
+    )
+    assert session.status_code == 200
+    assert session.json()["agent_id"] == "code-review-agent"
+
+    async def fake_run_text_agent(
+        *,
+        name,
+        instructions,
+        user_input,
+        provider_config,
+        session=None,
+        tools=None,
+        model_settings=None,
+    ):
+        assert "业务智能体：代码评审 Agent" in instructions
+        assert "专业的代码评审智能体" in instructions
+        assert "业务智能体：测试评审 Agent" not in instructions
+        return TextAgentRunResult(output_text="代码评审 Agent 的回复")
+
+    monkeypatch.setattr("app.agents.sdk_chat.run_text_agent", fake_run_text_agent)
+
+    response = client.post(
+        f"/reviews/sessions/{session.json()['id']}/messages",
+        json={"message": "请评审当前 diff"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agent_id"] == "code-review-agent"
+    assert body["latest_summary"] == "代码评审 Agent 的回复"
 
 
 def test_review_session_stop_cancels_running_agent(monkeypatch):
@@ -337,6 +550,7 @@ def test_agent_tools_include_skill_operations():
     tool_names = {tool.name for tool in tools}
     assert "load_skill" in tool_names
     assert "list_skills" in tool_names
+    assert "tavily_web_search" in tool_names
     assert "write_file_chunk" in tool_names
     assert "replace_in_file" in tool_names
 
@@ -579,6 +793,7 @@ def test_review_session_chat_completions_provider_does_not_attach_shell_tool(mon
             "replace_in_file",
             "load_skill",
             "list_skills",
+            "tavily_web_search",
         }
         assert model_settings.tool_choice == "auto"
         return TextAgentRunResult(output_text="chat_completions provider reply")

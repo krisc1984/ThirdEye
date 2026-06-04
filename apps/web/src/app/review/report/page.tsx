@@ -64,6 +64,8 @@ export default async function ReviewReportPage({
   const params = await searchParams;
   const sessionId = typeof params.session_id === "string" ? params.session_id : "";
   const playbookId = typeof params.playbook_id === "string" ? params.playbook_id : "";
+  const modeParam = typeof params.mode === "string" ? params.mode : "";
+  const preferredMode = modeParam === "markdown" || modeParam === "document" ? modeParam : "auto";
 
   if (!sessionId || !playbookId) {
     throw new Error("missing session_id or playbook_id");
@@ -92,6 +94,7 @@ export default async function ReviewReportPage({
       playbook={playbook}
       activeAgentName={activeAgent?.name ?? null}
       initialMarkdown={initialMarkdown}
+      preferredMode={preferredMode}
       knowledgeBinding={knowledgeBinding}
       knowledgeListing={knowledgeListing}
       projectId={projectId}

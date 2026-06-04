@@ -60,8 +60,10 @@ from app.agents.tool_registry import (
     validate_tool_json_arguments,
 )
 from app.core.config import settings
+from app.services.tavily_client import TavilyClient
 from app.services.skill_registry import SkillRegistryService
 from app.services.storage import JsonStorage
+from app.services.tavily_settings import TavilySettingsService
 from scripts.skill_agent import (
     MAX_READ_LIMIT,
     MAX_WRITE_CONTENT_CHARS,
@@ -142,6 +144,11 @@ WRITE_FILE_CHUNK_SPEC = ToolArgumentSpec(
     example_json='{"path":"...","content":"<text chunk>","mode":"append"}',
 )
 
+TAVILY_WEB_SEARCH_SPEC = ToolArgumentSpec(
+    required_fields=("query",),
+    example_json='{"query":"latest OpenAI responses API changes","max_results":5}',
+)
+
 
 def _prevalidate_tool_call(
     ctx: RunContextWrapper[object],
@@ -155,6 +162,42 @@ def _prevalidate_tool_call(
         spec=spec,
     )
     return error_message
+
+
+def _run_tavily_search(query: str, max_results: int = 5) -> str:
+    tavily_settings = TavilySettingsService(JsonStorage(settings.data_dir)).get_settings()
+    if not tavily_settings.enabled:
+        return "Error: Tavily web search is disabled in settings."
+    if tavily_settings.api_key is None:
+        return "Error: Tavily API key is not configured in settings."
+    try:
+        payload = __import__("asyncio").run(
+            TavilyClient().search(
+                api_key=tavily_settings.api_key.get_secret_value(),
+                query=query,
+                max_results=max(1, min(max_results, 10)),
+            )
+        )
+    except Exception as error:
+        return f"Error: Tavily search failed: {error}"
+    results = payload.get("results", [])
+    answer = payload.get("answer")
+    return json.dumps(
+        {
+            "query": query,
+            "answer": answer,
+            "results": [
+                {
+                    "title": item.get("title"),
+                    "url": item.get("url"),
+                    "content": item.get("content"),
+                }
+                for item in results[:10]
+                if isinstance(item, dict)
+            ],
+        },
+        ensure_ascii=False,
+    )
 
 
 def append_text_file(
@@ -255,4 +298,20 @@ def build_agent_tools(*, project_root_path: str, knowledge_base_path: str) -> li
         """List all available local skills with descriptions."""
         return run_list_skills(skill_loader)
 
-    return [bash, read_file, write_file_chunk, replace_in_file, load_skill, list_skills]
+    @function_tool(name_override="tavily_web_search")
+    def tavily_web_search(
+        ctx: RunContextWrapper[object],
+        query: str,
+        max_results: int = 5,
+    ) -> str:
+        """Search the public web through Tavily and return concise result records."""
+        prevalidation_error = _prevalidate_tool_call(
+            ctx,
+            tool_name="tavily_web_search",
+            spec=TAVILY_WEB_SEARCH_SPEC,
+        )
+        if prevalidation_error is not None:
+            return prevalidation_error
+        return _run_tavily_search(query=query, max_results=max_results)
+
+    return [bash, read_file, write_file_chunk, replace_in_file, load_skill, list_skills, tavily_web_search]

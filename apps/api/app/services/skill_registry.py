@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import UploadFile
 
+from app.schemas.skill_graph import CapabilityDefinition
 from app.schemas.skill_management import ManagedSkillDetail, ManagedSkillSummary, SkillRegistryEntry
 from app.services.storage import JsonStorage
 from scripts.skill_agent import SkillLoader
@@ -78,6 +79,21 @@ class SkillRegistryService:
         registry[name] = entry.model_copy(update={"enabled": enabled})
         self._save_registry(registry)
         return self.get_skill(name)
+
+    def build_capability_definition(self, name: str) -> CapabilityDefinition:
+        loader = self.enabled_skill_loader()
+        skill = loader.skills.get(name)
+        if skill is None:
+            raise FileNotFoundError(name)
+        meta = skill.get("meta", {})
+        return CapabilityDefinition(
+            id=f"cap_skill_{name.replace(' ', '_').replace('-', '_')}",
+            name=name,
+            kind="skill",
+            action=name,
+            description=str(meta.get("description", "")),
+            config={"skill_path": str(skill.get("path", ""))},
+        )
 
     async def install_zip(self, upload: UploadFile) -> ManagedSkillDetail:
         temp_dir = self.storage.root / "_tmp_skills"
@@ -179,4 +195,3 @@ class SkillRegistryService:
             "skills": [registry[name].model_dump(mode="json") for name in sorted(registry.keys())]
         }
         self.storage.save_json(SETTINGS_NAMESPACE, SETTINGS_RECORD_ID, payload)
-

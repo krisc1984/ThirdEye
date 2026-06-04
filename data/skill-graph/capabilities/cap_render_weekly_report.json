@@ -1,0 +1,15 @@
+{
+  "action": "render_weekly_report",
+  "description": "Render a deterministic weekly report output for tests and local demos.",
+  "enabled": true,
+  "id": "cap_render_weekly_report",
+  "input_schema": {},
+  "kind": "tool",
+  "name": "Render Weekly Report",
+  "output_schema": {},
+  "retry_policy": {
+    "backoff_seconds": 0.0,
+    "max_attempts": 1,
+    "retry_on": []
+  }
+}

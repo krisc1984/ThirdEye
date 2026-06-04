@@ -74,6 +74,7 @@ from app.schemas.review import ReviewResponse
 from app.services.business_agents import BusinessAgentService
 from app.services.knowledge_workspace import KnowledgeWorkspaceService
 from app.services.playbook_loader import LoadedPlaybook
+from app.services.review_session_observability import ReviewSessionObservabilityService
 from app.services.review_sessions import ReviewSessionStore
 from app.services.storage import JsonStorage, StorageError
 
@@ -83,6 +84,7 @@ def _persist_live_runtime_event(
     session_id: str,
     event: dict[str, object],
 ) -> None:
+    observability = ReviewSessionObservabilityService(session_store.data_root)
     kind = str(event.get("kind") or "").strip()
     phase = str(event.get("phase") or "").strip()
     if kind == "tool":
@@ -91,6 +93,17 @@ def _persist_live_runtime_event(
             return
         tool_name = str(event.get("tool_name") or "").strip() or None
         if phase == "start":
+            observability.append_event(
+                session_id,
+                event_type="tool_call_started",
+                runtime_id=str(event.get("runtime_id") or tool_call_id),
+                turn=int(event["turn"]) if event.get("turn") is not None else None,
+                payload={
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "arguments_raw": str(event.get("tool_arguments") or "") or None,
+                },
+            )
             session_store.upsert_tool_message(
                 session_id,
                 tool_call_id=tool_call_id,
@@ -102,6 +115,18 @@ def _persist_live_runtime_event(
             return
         if phase == "end":
             ok = bool(event.get("ok", True))
+            observability.append_event(
+                session_id,
+                event_type="tool_call_completed",
+                runtime_id=str(event.get("runtime_id") or tool_call_id),
+                turn=int(event["turn"]) if event.get("turn") is not None else None,
+                payload={
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "result_raw": str(event.get("result") or "") or None,
+                    "ok": ok,
+                },
+            )
             session_store.upsert_tool_message(
                 session_id,
                 tool_call_id=tool_call_id,
@@ -118,6 +143,17 @@ def _persist_live_runtime_event(
         provider_id = str(event.get("provider_id") or "").strip() or None
         model_name = str(event.get("model") or "").strip() or None
         if phase == "start":
+            observability.append_event(
+                session_id,
+                event_type="model_call_started",
+                runtime_id=runtime_id,
+                turn=int(event["turn"]) if event.get("turn") is not None else None,
+                payload={
+                    "provider_id": provider_id,
+                    "model": model_name,
+                    "input_raw": str(event.get("tool_arguments") or "") or None,
+                },
+            )
             session_store.upsert_llm_message(
                 session_id,
                 runtime_id=runtime_id,
@@ -130,6 +166,18 @@ def _persist_live_runtime_event(
             return
         if phase == "end":
             ok = bool(event.get("ok", True))
+            observability.append_event(
+                session_id,
+                event_type="model_call_completed",
+                runtime_id=runtime_id,
+                turn=int(event["turn"]) if event.get("turn") is not None else None,
+                payload={
+                    "provider_id": provider_id,
+                    "model": model_name,
+                    "result_raw": str(event.get("tool_result") or event.get("result") or "") or None,
+                    "ok": ok,
+                },
+            )
             session_store.upsert_llm_message(
                 session_id,
                 runtime_id=runtime_id,
@@ -221,8 +269,10 @@ def _build_rules_text(rules: list[PlaybookRule]) -> str:
     return "\n\n".join(sections)
 
 
-def _get_active_business_agent() -> BusinessAgentConfig:
+def _get_active_business_agent(agent_id: str | None = None) -> BusinessAgentConfig:
     service = BusinessAgentService(JsonStorage(settings.data_dir))
+    if agent_id:
+        return service.get_agent(agent_id)
     agents = service.list_agents()
     for agent in agents:
         if agent.is_default or agent.status == "active":
@@ -230,10 +280,15 @@ def _get_active_business_agent() -> BusinessAgentConfig:
     return agents[0]
 
 
-def _build_agent_instructions(*, project_root_path: str, knowledge_base_path: str) -> str:
+def _build_agent_instructions(
+    *,
+    project_root_path: str,
+    knowledge_base_path: str,
+    agent_id: str | None = None,
+) -> str:
     skills_root_path = str((API_ROOT / "skills").resolve())
     try:
-        active_agent = _get_active_business_agent()
+        active_agent = _get_active_business_agent(agent_id)
         role_prompt = active_agent.system_prompt
         agent_name = active_agent.name
     except Exception:
@@ -462,6 +517,7 @@ async def run_agent_chat_turn(
     instructions = _build_agent_instructions(
         project_root_path=project_root_path,
         knowledge_base_path=knowledge_base_path,
+        agent_id=state.agent_id,
     )
     tools = build_agent_tools(
         project_root_path=project_root_path,
@@ -610,6 +666,7 @@ async def resume_agent_chat_turn(
     instructions = _build_agent_instructions(
         project_root_path=project_root_path,
         knowledge_base_path=knowledge_base_path,
+        agent_id=state.agent_id,
     )
     tools = build_agent_tools(
         project_root_path=project_root_path,

@@ -49,9 +49,17 @@ class KnowledgeWorkspaceFileContent(BaseModel):
     relative_path: str
     content: str
     truncated: bool = False
+    content_type: str = "text"
 
 
 class KnowledgeWorkspaceSaveTextRequest(BaseModel):
     project_id: str | None = None
     filename: str
     content: str
+
+
+class KnowledgeWorkspaceSaveDocxRequest(BaseModel):
+    project_id: str | None = None
+    filename: str
+    content: str
+    source_relative_path: str | None = None

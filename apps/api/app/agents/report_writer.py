@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from app.agents.sdk_runtime import run_text_agent
+from app.agents.sdk_runtime import AgentResumeError, run_text_agent
+from app.model_providers.llm_client import summarize_provider_error
 from app.schemas.model_provider import ModelProviderConfig
 from app.schemas.review import ReviewConversationSession, ReviewReportAssistantResponse
 from app.services.playbook_loader import LoadedPlaybook
@@ -74,6 +75,16 @@ def _extract_markdown(reply: str, fallback_markdown: str) -> str:
     return content or fallback_markdown
 
 
+def _build_fallback_reply(markdown: str, reason: str) -> str:
+    return (
+        "## 编辑说明\n"
+        f"本次报告助手调用未成功完成，已保留当前草稿不做自动改写。你可以继续手工编辑，或稍后重试。\n"
+        f"失败原因：{reason}\n\n"
+        "## Markdown 成稿\n"
+        f"{markdown}"
+    )
+
+
 async def generate_review_report_reply(
     *,
     session: ReviewConversationSession,
@@ -97,22 +108,33 @@ async def generate_review_report_reply(
             execution_note="No available provider for report writer.",
         )
 
-    result = await run_text_agent(
-        name="ThirdEye Review Report Writer",
-        instructions=_build_report_writer_instructions(),
-        user_input=_build_report_writer_prompt(
-            session=session,
-            playbook=playbook,
-            markdown=markdown,
-            instruction=instruction,
-        ),
-        provider_config=provider_config,
-    )
-    reply = result.output_text.strip()
-    return ReviewReportAssistantResponse(
-        reply=reply,
-        suggested_markdown=_extract_markdown(reply, markdown),
-        execution_mode="llm",
-        resolved_provider_id=provider_config.id,
-        execution_note="Review report assistant completed via OpenAI Agents SDK.",
-    )
+    try:
+        result = await run_text_agent(
+            name="ThirdEye Review Report Writer",
+            instructions=_build_report_writer_instructions(),
+            user_input=_build_report_writer_prompt(
+                session=session,
+                playbook=playbook,
+                markdown=markdown,
+                instruction=instruction,
+            ),
+            provider_config=provider_config,
+        )
+        reply = result.output_text.strip()
+        return ReviewReportAssistantResponse(
+            reply=reply,
+            suggested_markdown=_extract_markdown(reply, markdown),
+            execution_mode="llm",
+            resolved_provider_id=provider_config.id,
+            execution_note="Review report assistant completed via OpenAI Agents SDK.",
+        )
+    except AgentResumeError as error:
+        reason = summarize_provider_error(error)
+        reply = _build_fallback_reply(markdown, reason)
+        return ReviewReportAssistantResponse(
+            reply=reply,
+            suggested_markdown=markdown,
+            execution_mode="deterministic",
+            resolved_provider_id=None,
+            execution_note=f"Review report assistant failed and fell back to draft preservation: {reason}",
+        )

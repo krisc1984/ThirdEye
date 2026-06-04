@@ -8,12 +8,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.agent_configs import router as agent_configs_router
 from app.api.health import router as health_router
 from app.api.knowledge_workspace import router as knowledge_workspace_router
+from app.api.mcp_servers import router as mcp_servers_router
 from app.api.model_providers import router as model_providers_router
+from app.api.observability import router as observability_router
 from app.api.playbooks import router as playbooks_router
 from app.api.projects import router as projects_router
 from app.api.reviews import router as reviews_router
 from app.api.skills_manage import router as skills_manage_router
 from app.api.skills import router as skills_router
+from app.api.skill_graph import router as skill_graph_router
+from app.api.tavily_settings import router as tavily_settings_router
 from app.core.config import settings
 
 
@@ -99,9 +103,13 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(agent_configs_router)
 app.include_router(knowledge_workspace_router)
+app.include_router(mcp_servers_router)
 app.include_router(projects_router)
 app.include_router(playbooks_router)
 app.include_router(model_providers_router)
+app.include_router(observability_router)
 app.include_router(reviews_router)
 app.include_router(skills_manage_router)
 app.include_router(skills_router)
+app.include_router(skill_graph_router)
+app.include_router(tavily_settings_router)

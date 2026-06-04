@@ -5,6 +5,13 @@ import re
 from pathlib import Path
 from typing import Any
 
+GRAPH_ROOT_NAMESPACE = "skill-graph"
+GRAPH_CAPABILITIES_NAMESPACE = f"{GRAPH_ROOT_NAMESPACE}/capabilities"
+GRAPH_COMPOSITES_NAMESPACE = f"{GRAPH_ROOT_NAMESPACE}/composites"
+GRAPH_PLAYBOOKS_NAMESPACE = f"{GRAPH_ROOT_NAMESPACE}/graph-playbooks"
+GRAPH_RUNS_NAMESPACE = f"{GRAPH_ROOT_NAMESPACE}/runs"
+GRAPH_ASSETS_NAMESPACE = f"{GRAPH_ROOT_NAMESPACE}/assets"
+
 
 class StorageError(ValueError):
     """Raised when a storage key or namespace is invalid."""
@@ -51,6 +58,29 @@ class JsonStorage:
             raise FileNotFoundError(path)
         path.unlink()
 
+    def save_graph_run_snapshot(
+        self,
+        run_id: str,
+        snapshot_name: str,
+        payload: dict[str, Any],
+    ) -> Path:
+        run_dir = self._graph_run_dir(run_id)
+        snapshot_path = self._relative_json_path(run_dir, snapshot_name)
+        snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        snapshot_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        return snapshot_path
+
+    def load_graph_run_snapshot(self, run_id: str, snapshot_name: str) -> dict[str, Any]:
+        snapshot_path = self._relative_json_path(self._graph_run_dir(run_id), snapshot_name)
+        with snapshot_path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            raise StorageError("stored JSON record must be an object")
+        return data
+
     def save_playbook_artifact(
         self,
         playbook_id: str,
@@ -84,12 +114,23 @@ class JsonStorage:
         return self._safe_child(directory, f"{record_id}.json")
 
     def _namespace_path(self, namespace: str) -> Path:
-        self._validate_id(namespace, "namespace")
-        return self._safe_child(self.root, namespace)
+        self._validate_namespace(namespace)
+        current = self.root
+        for segment in namespace.split("/"):
+            current = self._safe_child(current, segment)
+        return current
 
     def _playbook_dir(self, playbook_id: str) -> Path:
         self._validate_id(playbook_id, "playbook id")
         return self._safe_child(self.root / "playbooks", playbook_id)
+
+    def _graph_run_dir(self, run_id: str) -> Path:
+        self._validate_id(run_id, "run id")
+        return self._safe_child(self._namespace_path(GRAPH_RUNS_NAMESPACE), run_id)
+
+    def _relative_json_path(self, parent: Path, value: str) -> Path:
+        self._validate_relative_path(value, "snapshot name")
+        return self._safe_child(parent, f"{value}.json")
 
     def _safe_child(self, parent: Path, child: str) -> Path:
         if Path(child).is_absolute():
@@ -102,4 +143,12 @@ class JsonStorage:
 
     def _validate_id(self, value: str, label: str) -> None:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value):
+            raise StorageError(f"invalid {label}: {value!r}")
+
+    def _validate_namespace(self, value: str) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)*", value):
+            raise StorageError(f"invalid namespace: {value!r}")
+
+    def _validate_relative_path(self, value: str, label: str) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)*", value):
             raise StorageError(f"invalid {label}: {value!r}")

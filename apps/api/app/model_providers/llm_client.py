@@ -51,6 +51,21 @@ class LLMClient:
         user_content = json.dumps(payload, ensure_ascii=False, indent=2)
         return await self._request_json(config, prompt, user_content)
 
+    async def generate_capability_draft(self, config: ModelProviderConfig, payload: dict[str, Any]) -> dict[str, Any]:
+        system_prompt = (
+            "你是 ThirdEye 的原子能力注册助手。"
+            "请根据用户提供的 kind、name、description，输出一个 JSON 对象，"
+            "用于补全 capability 草稿。"
+            "只返回 JSON，不要输出额外解释。"
+            "必须只包含这些顶层字段中的任意子集："
+            "id, name, action, description, config, input_schema, output_schema, retry_policy, enabled。"
+            "其中 config/input_schema/output_schema/retry_policy 必须是对象。"
+            "id 使用 ASCII、下划线或中划线，action 使用稳定的英文动作名。"
+            "schema 里的 description 请使用中文。"
+        )
+        user_content = json.dumps(payload, ensure_ascii=False, indent=2)
+        return await self._request_json(config, system_prompt, user_content)
+
     async def test_connection(self, config: ModelProviderConfig) -> str:
         client = AsyncOpenAI(
             api_key=config.api_key.get_secret_value() if config.api_key else None,

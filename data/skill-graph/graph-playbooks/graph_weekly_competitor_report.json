@@ -1,0 +1,51 @@
+{
+  "created_at": "2026-05-14T12:55:27.515755",
+  "description": "Monitor a competitor homepage, wait for human approval, then render the weekly report.",
+  "edges": [
+    {
+      "condition": null,
+      "source": "monitor_competitor",
+      "target": "approve_report"
+    },
+    {
+      "condition": "approve",
+      "source": "approve_report",
+      "target": "render_report"
+    },
+    {
+      "condition": "reject",
+      "source": "approve_report",
+      "target": "render_report"
+    }
+  ],
+  "entry_node_id": "monitor_competitor",
+  "id": "graph_weekly_competitor_report",
+  "name": "Weekly Competitor Report",
+  "nodes": [
+    {
+      "approval_label": null,
+      "capability_id": null,
+      "composite_id": "comp_single_competitor_monitor",
+      "config": {},
+      "id": "monitor_competitor",
+      "type": "composite"
+    },
+    {
+      "approval_label": "Approve weekly report",
+      "capability_id": null,
+      "composite_id": null,
+      "config": {},
+      "id": "approve_report",
+      "type": "human_approval"
+    },
+    {
+      "approval_label": null,
+      "capability_id": "cap_render_weekly_report",
+      "composite_id": null,
+      "config": {},
+      "id": "render_report",
+      "type": "capability"
+    }
+  ],
+  "version": "1.0.0"
+}

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState, useTransition } from "react";
 
 import type { BusinessAgentConfig } from "@/lib/api";
@@ -230,6 +231,11 @@ export function BusinessAgentSettings({ initialAgents }: BusinessAgentSettingsPr
                     <button type="button" onClick={() => handleSelectAgent(agent)}>
                       编辑配置
                     </button>
+                    {agent.id === "code-review-agent" ? (
+                      <Link className="settings-provider-card__link" href="/review/code">
+                        进入代码评审
+                      </Link>
+                    ) : null}
                     <button type="button" onClick={() => handleActivate(agent.id)} disabled={isPending || agent.is_default}>
                       {agent.is_default ? "当前生效" : "设为生效"}
                     </button>
@@ -360,4 +366,3 @@ export function BusinessAgentSettings({ initialAgents }: BusinessAgentSettingsPr
     </section>
   );
 }
-

@@ -1,0 +1,21 @@
+{
+  "created_at": "2026-05-14T11:19:49.813472",
+  "description": "Fetch one competitor homepage and summarize the notable changes.",
+  "id": "comp_single_competitor_monitor",
+  "mode": "chain",
+  "name": "Single Competitor Monitor",
+  "nodes": [
+    {
+      "capability_id": "shangtang_fetch_competitor_homepage",
+      "id": "fetch_homepage",
+      "input_mapping": {},
+      "order": 1
+    },
+    {
+      "capability_id": "cap_summarize_page_changes",
+      "id": "summarize_changes",
+      "input_mapping": {},
+      "order": 2
+    }
+  ]
+}

@@ -2,11 +2,12 @@
 
 import { useMemo, useState, useTransition } from "react";
 
-import type { ModelProviderConfig, ModelProviderTestResult } from "@/lib/api";
-import { createModelProvider, testProvider } from "@/lib/api";
+import type { ModelProviderConfig, ModelProviderTestResult, TavilySettings } from "@/lib/api";
+import { createModelProvider, testProvider, updateTavilySettings } from "@/lib/api";
 
 type ModelProviderFormProps = {
   initialProviders: ModelProviderConfig[];
+  initialTavilySettings: TavilySettings;
 };
 
 type FormState = {
@@ -53,13 +54,15 @@ function buildFormFromProvider(provider: ModelProviderConfig): FormState {
   };
 }
 
-export function ModelProviderForm({ initialProviders }: ModelProviderFormProps) {
+export function ModelProviderForm({ initialProviders, initialTavilySettings }: ModelProviderFormProps) {
   const [providers, setProviders] = useState(initialProviders);
   const [form, setForm] = useState<FormState>(() =>
     initialProviders[0] ? buildFormFromProvider(initialProviders[0]) : initialForm
   );
   const [activeProviderId, setActiveProviderId] = useState(initialProviders[0]?.id ?? "");
   const [lastTest, setLastTest] = useState<ModelProviderTestResult | null>(null);
+  const [tavilyApiKey, setTavilyApiKey] = useState("");
+  const [tavilySettings, setTavilySettings] = useState(initialTavilySettings);
   const [error, setError] = useState<string | null>(null);
   const [testingProviderId, setTestingProviderId] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -394,6 +397,65 @@ export function ModelProviderForm({ initialProviders }: ModelProviderFormProps) 
           ) : (
             <p className="workspace-empty">发送一次测试报文后，这里会展示模型回包和能力摘要。</p>
           )}
+        </section>
+
+        <section className="workspace-panel">
+          <div className="workspace-panel__header">
+            <div>
+              <strong>Tavily Web 搜索</strong>
+              <span>配置联网搜索 tool 的 API Key 与启用状态</span>
+            </div>
+          </div>
+          <div className="settings-focus">
+            <label className="settings-field">
+              <span>Tavily API Key</span>
+              <input
+                type="password"
+                value={tavilyApiKey}
+                onChange={(event) => setTavilyApiKey(event.target.value)}
+                placeholder={tavilySettings.api_key ? "已配置，留空则保留当前 Key" : "tvly-..."}
+              />
+            </label>
+            <label className="settings-toggle">
+              <input
+                type="checkbox"
+                checked={tavilySettings.enabled}
+                onChange={(event) => setTavilySettings((current) => ({ ...current, enabled: event.target.checked }))}
+              />
+              <div>
+                <strong>启用 Tavily 搜索</strong>
+                <span>开启后会暴露 `tavily_web_search` 工具给运行时 Agent。</span>
+              </div>
+            </label>
+            <div className="settings-form-actions">
+              <button
+                type="button"
+                className="settings-cta settings-cta--secondary"
+                disabled={isPending}
+                onClick={() => {
+                  setError(null);
+                  startTransition(async () => {
+                    try {
+                      const updated = await updateTavilySettings({
+                        api_key: tavilyApiKey.trim() || null,
+                        enabled: tavilySettings.enabled,
+                      });
+                      setTavilySettings(updated);
+                      setTavilyApiKey("");
+                    } catch (caughtError) {
+                      setError(caughtError instanceof Error ? caughtError.message : "保存 Tavily 配置失败。");
+                    }
+                  });
+                }}
+              >
+                {isPending ? "保存中..." : "保存 Tavily 配置"}
+              </button>
+            </div>
+            <div className="settings-focus__tags">
+              <span>{tavilySettings.enabled ? "search enabled" : "search disabled"}</span>
+              <span>{tavilySettings.api_key ? "key configured" : "key missing"}</span>
+            </div>
+          </div>
         </section>
 
         {error ? <p className="workspace-status workspace-status--error">{error}</p> : null}

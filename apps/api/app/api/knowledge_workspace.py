@@ -9,6 +9,7 @@ from app.schemas.knowledge_workspace import (
     KnowledgeWorkspaceBinding,
     KnowledgeWorkspaceFileContent,
     KnowledgeWorkspaceListing,
+    KnowledgeWorkspaceSaveDocxRequest,
     KnowledgeWorkspaceSaveTextRequest,
     KnowledgeWorkspaceSettings,
     KnowledgeWorkspaceUpdateRequest,
@@ -81,12 +82,30 @@ def save_knowledge_workspace_text_file(request: KnowledgeWorkspaceSaveTextReques
     )
 
 
+@router.post("/files/save-docx", response_model=KnowledgeWorkspaceUploadResult)
+def save_knowledge_workspace_docx_file(request: KnowledgeWorkspaceSaveDocxRequest) -> KnowledgeWorkspaceUploadResult:
+    return get_service().save_docx_file(
+        project_id=request.project_id,
+        filename=request.filename,
+        content=request.content,
+        source_relative_path=request.source_relative_path,
+    )
+
+
 @router.get("/files/content", response_model=KnowledgeWorkspaceFileContent)
 def get_knowledge_workspace_file_content(
     project_id: str | None = Query(default=None),
     relative_path: str = Query(...),
 ) -> KnowledgeWorkspaceFileContent:
     return get_service().read_text_file(project_id=project_id, relative_path=relative_path)
+
+
+@router.get("/files/docx/content", response_model=KnowledgeWorkspaceFileContent)
+def get_knowledge_workspace_docx_content(
+    project_id: str | None = Query(default=None),
+    relative_path: str = Query(...),
+) -> KnowledgeWorkspaceFileContent:
+    return get_service().read_docx_file(project_id=project_id, relative_path=relative_path)
 
 
 @router.get("/projects/{project_id}", response_model=KnowledgeWorkspaceBinding)

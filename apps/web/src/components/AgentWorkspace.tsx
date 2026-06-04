@@ -327,6 +327,7 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills, ac
   const [session, setSession] = useState<ReviewConversationSession | null>(null);
   const [sessionHistory, setSessionHistory] = useState<ReviewConversationSession[]>([]);
   const [playbookDetail, setPlaybookDetail] = useState<PlaybookDetail | null>(null);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [isPending, startTransition] = useTransition();
@@ -848,6 +849,18 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills, ac
     });
   }
 
+  async function handleCopyMessage(messageId: string, content: string) {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedMessageId(messageId);
+      window.setTimeout(() => {
+        setCopiedMessageId((current) => (current === messageId ? null : current));
+      }, 1800);
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "复制失败");
+    }
+  }
+
   async function handlePickKnowledgeFolder(scope: "global" | "project") {
     try {
       setError(null);
@@ -1162,7 +1175,21 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills, ac
                         ? `工具 · ${message.toolName ?? "未知工具"}`
                         : "你"}
                   </strong>
-                  <span>{message.timestamp}</span>
+                  <div className="workspace-message__meta-actions">
+                    <span>{message.timestamp}</span>
+                    {message.role === "assistant" ? (
+                      <button
+                        type="button"
+                        className={`workspace-copy-button ${
+                          copiedMessageId === message.id ? "workspace-copy-button--copied" : ""
+                        }`}
+                        onClick={() => void handleCopyMessage(message.id, message.content)}
+                        aria-label="复制当前回复"
+                      >
+                        {copiedMessageId === message.id ? "已复制" : "复制"}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
                 {message.role === "tool" || message.role === "llm" ? (
                   <div className="workspace-tool-call">
@@ -1433,12 +1460,20 @@ export function AgentWorkspace({ playbooks, modelProviders, projects, skills, ac
           <div className="workspace-summary__footer">
             <span>更新于 {session ? formatTime(session.updated_at) : "--:--"}</span>
             {session && selectedPlaybookId ? (
-              <Link
-                href={`/review/report?session_id=${encodeURIComponent(session.id)}&playbook_id=${encodeURIComponent(selectedPlaybookId)}`}
-                className="workspace-summary__link"
-              >
-                待确认
-              </Link>
+              <div className="workspace-summary__links">
+                <Link
+                  href={`/review/report?session_id=${encodeURIComponent(session.id)}&playbook_id=${encodeURIComponent(selectedPlaybookId)}&mode=markdown`}
+                  className="workspace-summary__link"
+                >
+                  Markdown编辑
+                </Link>
+                <Link
+                  href={`/review/report?session_id=${encodeURIComponent(session.id)}&playbook_id=${encodeURIComponent(selectedPlaybookId)}&mode=document`}
+                  className="workspace-summary__link"
+                >
+                  文档评审
+                </Link>
+              </div>
             ) : (
               <button type="button" disabled>
                 待确认
